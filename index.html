@@ -2,10 +2,12 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Pig Scorekeeper – Grid (Dark, Label-Style Names)</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+    <title>Pig Scorekeeper</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Production React for performance -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -13,32 +15,49 @@
   <body class="bg-slate-900">
     <div id="root"></div>
     <script type="text/babel" data-presets="react,env">
-      const { useEffect, useRef, useState, useMemo } = React;
+      const { useEffect, useMemo, useRef, useState } = React;
       const MAX_MEMBERS = 3;
       const uid = () => Math.random().toString(36).slice(2, 10);
-      const STORAGE_KEY = "pig-grid-standalone-v13-dark-labelnames";
+      const STORAGE_KEY = "pig-grid-v15";
       const sum = (arr) => arr.reduce((a, b) => a + b, 0);
       const clampInt = (n) => { const x = Math.floor(Number(n)); return Number.isFinite(x) ? x : 0; };
+
+      const useTheme = (initial="dark") => {
+        const [theme, setTheme] = useState(() => {
+          try { return localStorage.getItem(STORAGE_KEY + ":theme") || initial; } catch { return initial; }
+        });
+        useEffect(() => { try { localStorage.setItem(STORAGE_KEY + ":theme", theme); } catch {} }, [theme]);
+        useEffect(() => { document.body.className = theme === "dark" ? "bg-slate-900" : "bg-slate-50"; }, [theme]);
+        return [theme, setTheme];
+      };
+
+      const useIsMobile = () => {
+        const get = () => (typeof window !== "undefined" ? window.innerWidth < 768 : false);
+        const [isMobile, setIsMobile] = useState(get());
+        useEffect(() => { const onResize = () => setIsMobile(get()); window.addEventListener("resize", onResize); return () => window.removeEventListener("resize", onResize); }, []);
+        return isMobile;
+      };
 
       let saveTimer = null;
       function usePersistedState(initial) {
         const [state, setState] = useState(() => {
           try {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            if (raw) {
-              const loaded = JSON.parse(raw);
+            if (location.hash && location.hash.startsWith("#s=")) {
+              const b64 = location.hash.slice(3);
+              const json = decodeURIComponent(atob(b64));
+              const loaded = JSON.parse(json);
+              history.replaceState(null, "", location.pathname);
               return { ...initial, ...loaded, history: [] };
             }
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) return { ...initial, ...JSON.parse(raw), history: [] };
           } catch {}
           return initial;
         });
-        // Debounced persistence
         useEffect(() => {
           const { history, ...persistable } = state;
           try { if (saveTimer) clearTimeout(saveTimer); } catch {}
-          saveTimer = setTimeout(() => {
-            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable)); } catch {}
-          }, 300);
+          saveTimer = setTimeout(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable)); } catch {} }, 250);
           return () => { try { if (saveTimer) clearTimeout(saveTimer); } catch {} };
         }, [state]);
         return [state, setState];
@@ -57,7 +76,17 @@
         return ref;
       }
 
+      const TEAM_ACCENTS = [
+        { ring: "ring-rose-400", chip: "bg-rose-500/20 text-rose-200", label: "from-rose-400 to-pink-400" },
+        { ring: "ring-sky-400",  chip: "bg-sky-500/20 text-sky-200",   label: "from-sky-400 to-cyan-400"  },
+        { ring: "ring-amber-400", chip:"bg-amber-500/20 text-amber-200", label:"from-amber-400 to-yellow-400" },
+        { ring: "ring-violet-400", chip:"bg-violet-500/20 text-violet-200", label:"from-violet-400 to-fuchsia-400" },
+        { ring: "ring-emerald-400", chip:"bg-emerald-500/20 text-emerald-200", label:"from-emerald-400 to-teal-400" },
+      ];
+
       function App() {
+        const isMobile = useIsMobile();
+        const [theme, setTheme] = useTheme("dark");
         const [app, setApp] = usePersistedState({
           mode: "teams",
           target: 100,
@@ -72,35 +101,18 @@
           history: [],
           pending: {},
         });
-
         const [focusedId, setFocusedId] = useState(null); // "<id>:score"
 
-        const makeSnapshot = (prev) => ({
-          mode: prev.mode,
-          target: prev.target,
-          teams: prev.teams,
-          players: prev.players,
-          pending: prev.pending,
-        });
-        const pushHistory = (label) =>
-          setApp(prev => ({
-            ...prev,
-            history: [...prev.history.slice(-9), { label, snapshot: makeSnapshot(prev), ts: Date.now() }],
-          }));
-        const onUndo = () => {
-          if (app.history.length === 0) return;
-          const last = app.history[app.history.length - 1];
-          setApp(prev => ({ ...prev, ...last.snapshot, history: prev.history.slice(0, -1) }));
-        };
+        const makeSnapshot = (prev) => ({ mode: prev.mode, target: prev.target, teams: prev.teams, players: prev.players, pending: prev.pending });
+        const pushHistory = (label) => setApp(prev => ({ ...prev, history: [...prev.history.slice(-9), { label, snapshot: makeSnapshot(prev), ts: Date.now() }] }));
+        const onUndo = () => { if (app.history.length === 0) return; const last = app.history[app.history.length - 1]; setApp(prev => ({ ...prev, ...last.snapshot, history: prev.history.slice(0, -1) })); };
 
         const addTeam = () => setApp(prev => ({ ...prev, teams: [...prev.teams, { id: uid(), name: `Team ${String.fromCharCode(65 + prev.teams.length)}`, members: [] }] }));
         const removeTeam = (teamId) => setApp(prev => ({ ...prev, teams: prev.teams.filter(t => t.id !== teamId) }));
         const renameTeam = (teamId, name) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, name } : t) }));
-
         const addMember = (teamId) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, members: t.members.length >= MAX_MEMBERS ? t.members : [...t.members, { id: uid(), name: `Member ${t.members.length + 1}`, entries: [] }] } : t) }));
         const removeMember = (teamId, memberId) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, members: t.members.filter(m => m.id !== memberId) } : t) }));
         const renameMember = (teamId, memberId, name) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, name } : m) } : t) }));
-
         const addPlayer = () => setApp(prev => ({ ...prev, players: [...prev.players, { id: uid(), name: `Player ${prev.players.length + 1}`, entries: [] }] }));
         const removePlayer = (id) => setApp(prev => ({ ...prev, players: prev.players.filter(p => p.id !== id) }));
         const renamePlayer = (id, name) => setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === id ? { ...p, name } : p) }));
@@ -112,192 +124,188 @@
           const n = clampInt(raw);
           if (n < 0) { setPending(memberId, ""); return; }
           pushHistory("+" + n);
-          if (isTeams) {
-            setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === contextId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, entries: [...m.entries, n] } : m) } : t), pending: { ...prev.pending, [memberId]: "" } }));
-          } else {
-            setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === memberId ? { ...p, entries: [...p.entries, n] } : p), pending: { ...prev.pending, [memberId]: "" } }));
-          }
+          if (isTeams) setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === contextId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, entries: [...m.entries, n] } : m) } : t), pending: { ...prev.pending, [memberId]: "" } }));
+          else setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === memberId ? { ...p, entries: [...p.entries, n] } : p), pending: { ...prev.pending, [memberId]: "" } }));
         };
-        const undoLastForMember = (contextId, memberId, isTeams) => {
-          pushHistory("undo member last");
-          if (isTeams) {
-            setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === contextId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, entries: m.entries.slice(0, -1) } : m) } : t) }));
-          } else {
-            setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === memberId ? { ...p, entries: p.entries.slice(0, -1) } : p) }));
-          }
-        };
-        const resetAll = () => {
-          pushHistory("reset");
-          setApp(prev => ({ ...prev, teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })), players: prev.players.map(p => ({ ...p, entries: [] })), pending: {} }));
-        };
+        const resetAll = () => { pushHistory("reset"); setApp(prev => ({ ...prev, teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })), players: prev.players.map(p => ({ ...p, entries: [] })), pending: {} })); };
 
-        const memberTotal = (m) => sum(m.entries);
-        const teamTotal = (t) => sum(t.members.map(memberTotal));
-        const teamRemaining = (t) => Math.max(0, 100 - teamTotal(t));
-        const isWinner = (t) => teamTotal(t) >= 100;
-
-        // ===== Tab order (Teams) row-wise across columns =====
         const scoreOrderTeams = useMemo(() => {
           if (app.mode !== "teams") return [];
           const teams = app.teams;
           const maxRows = Math.max(0, ...teams.map(t => t.members.length));
           const order = [];
-          for (let row = 0; row < maxRows; row++) {
-            for (let col = 0; col < teams.length; col++) {
-              const t = teams[col];
-              const m = t.members[row];
-              if (m) order.push({ memberId: m.id, teamId: t.id });
-            }
+          for (let row = 0; row < maxRows; row++) for (let col = 0; col < teams.length; col++) {
+            const t = teams[col]; const m = t.members[row]; if (m) order.push({ memberId: m.id, teamId: t.id });
           }
           return order;
         }, [app.mode, app.teams]);
-        const scoreIndexTeams = useMemo(() => {
-          const map = new Map();
-          scoreOrderTeams.forEach((o, i) => map.set(o.memberId, i));
-          return map;
-        }, [scoreOrderTeams]);
+        const memberToTeam = useMemo(() => { const map = new Map(); scoreOrderTeams.forEach(o => map.set(o.memberId, o.teamId)); return map; }, [scoreOrderTeams]);
+        const scoreIndexTeams = useMemo(() => { const map = new Map(); scoreOrderTeams.forEach((o, i) => map.set(o.memberId, i)); return map; }, [scoreOrderTeams]);
 
-        // Solo tab order (simple left-to-right)
-        const scoreOrderSolo = useMemo(() => {
-          if (app.mode !== "solo") return [];
-          return app.players.map(p => ({ playerId: p.id }));
-        }, [app.mode, app.players]);
-        const scoreIndexSolo = useMemo(() => {
-          const map = new Map();
-          scoreOrderSolo.forEach((o, i) => map.set(o.playerId, i));
-          return map;
-        }, [scoreOrderSolo]);
+        const scoreOrderSolo = useMemo(() => app.mode !== "solo" ? [] : app.players.map(p => ({ playerId: p.id })), [app.mode, app.players]);
+        const scoreIndexSolo = useMemo(() => { const map = new Map(); scoreOrderSolo.forEach((o, i) => map.set(o.playerId, i)); return map; }, [scoreOrderSolo]);
 
-        const nextUp = useMemo(() => {
-          if (app.mode === "teams") {
-            if (scoreOrderTeams.length === 0) return { label: "—" };
-            let curIdx = -1;
-            if (focusedId && focusedId.endsWith(":score")) {
-              const id = focusedId.slice(0, -6);
-              curIdx = scoreIndexTeams.has(id) ? scoreIndexTeams.get(id) : -1;
-            }
-            const nextIdx = (curIdx + 1) % scoreOrderTeams.length;
-            const { memberId, teamId } = scoreOrderTeams[nextIdx];
-            let teamName = "Team";
-            let memberName = "Member";
-            for (const t of app.teams) {
-              if (t.id === teamId) {
-                teamName = t.name || teamName;
-                const m = t.members.find(x => x.id === memberId);
-                if (m) memberName = m.name || memberName;
-                break;
-              }
-            }
-            return { label: `${teamName} — ${memberName}` };
-          } else {
-            if (scoreOrderSolo.length === 0) return { label: "—" };
-            let curIdx = -1;
-            if (focusedId && focusedId.endsWith(":score")) {
-              const id = focusedId.slice(0, -6);
-              curIdx = scoreIndexSolo.has(id) ? scoreIndexSolo.get(id) : -1;
-            }
-            const nextIdx = (curIdx + 1) % scoreOrderSolo.length;
-            const { playerId } = scoreOrderSolo[nextIdx];
-            const p = app.players.find(x => x.id === playerId);
-            return { label: p ? p.name : "Player" };
-          }
-        }, [app.mode, focusedId, scoreOrderTeams, scoreIndexTeams, app.teams, scoreOrderSolo, scoreIndexSolo, app.players]);
-
-        const moveFocusTeams = (fromMemberId, direction) => {
+        const moveFocusTeams = (fromMemberId, dir) => {
           if (scoreOrderTeams.length === 0) return;
           const idx = scoreIndexTeams.has(fromMemberId) ? scoreIndexTeams.get(fromMemberId) : -1;
-          const nextIdx = idx < 0 ? 0 : (idx + direction + scoreOrderTeams.length) % scoreOrderTeams.length;
+          const nextIdx = idx < 0 ? 0 : (idx + dir + scoreOrderTeams.length) % scoreOrderTeams.length;
           const nextMemberId = scoreOrderTeams[nextIdx].memberId;
           setFocusedId(nextMemberId + ":score");
         };
-        const moveFocusSolo = (fromPlayerId, direction) => {
+        const moveFocusSolo = (fromPlayerId, dir) => {
           if (scoreOrderSolo.length === 0) return;
           const idx = scoreIndexSolo.has(fromPlayerId) ? scoreIndexSolo.get(fromPlayerId) : -1;
-          const nextIdx = idx < 0 ? 0 : (idx + direction + scoreOrderSolo.length) % scoreOrderSolo.length;
+          const nextIdx = idx < 0 ? 0 : (idx + dir + scoreOrderSolo.length) % scoreOrderSolo.length;
           const nextPlayerId = scoreOrderSolo[nextIdx].playerId;
           setFocusedId(nextPlayerId + ":score");
         };
 
-        // ===== Styles =====
-        const card = "rounded-2xl shadow border border-slate-700 bg-slate-800";
-        const chip = "inline-block px-2 py-0.5 rounded-lg text-xs";
-        const label = "text-xs uppercase tracking-wide text-slate-400";
+        const mobileSaveAndNext = () => {
+          if (app.mode === "teams") {
+            let memberId = null;
+            if (focusedId && focusedId.endsWith(":score")) memberId = focusedId.slice(0, -6);
+            if (!memberId && scoreOrderTeams.length) memberId = scoreOrderTeams[0].memberId;
+            if (!memberId) return;
+            const teamId = memberToTeam.get(memberId);
+            if (teamId) commitPending(teamId, memberId, true);
+            moveFocusTeams(memberId, +1);
+          } else {
+            let playerId = null;
+            if (focusedId && focusedId.endsWith(":score")) playerId = focusedId.slice(0, -6);
+            if (!playerId && scoreOrderSolo.length) playerId = scoreOrderSolo[0].playerId;
+            if (!playerId) return;
+            commitPending("_solo", playerId, false);
+            moveFocusSolo(playerId, +1);
+          }
+        };
 
-        const inputBase = "px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600";
-        // Label-style input: no border until focused; subtle underline on hover/focus; centered text
-        const inputName = "px-1 py-1 bg-transparent text-slate-100 text-center text-sm outline-none border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:ring-0 transition-colors";
-        const btn = "px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700";
-        const btnPrimary = "px-3 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500";
-        const btnSmall = "px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs";
+        const classes = (theme) => {
+          const dark = {
+            page: "min-h-screen w-full text-slate-100 pb-24 p-3 md:p-6",
+            card: "rounded-2xl shadow border border-slate-700 bg-slate-800",
+            chip: "inline-block px-2 py-0.5 rounded-lg text-xs",
+            label: "text-xs uppercase tracking-wide text-slate-400",
+            input: "px-3 py-3 md:py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 text-lg md:text-base",
+            inputName: "px-1 py-1 bg-transparent text-slate-100 text-center text-base md:text-sm outline-none border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:ring-0 transition-colors",
+            btn: "px-4 py-3 md:py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 h-12 md:h-10 text-base",
+            btnPrimary: "px-4 py-3 md:py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-12 md:h-10 text-base",
+            btnSmall: "px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm",
+            total: "text-5xl md:text-6xl font-black text-rose-400 tabular-nums",
+            remain: "italic text-slate-300",
+            bar: "fixed bottom-0 left-0 right-0 z-50 bg-slate-900/95 backdrop-blur border-t border-slate-700",
+          };
+          const light = {
+            page: "min-h-screen w-full text-slate-900 pb-24 p-3 md:p-6",
+            card: "rounded-2xl shadow border border-slate-300 bg-white",
+            chip: "inline-block px-2 py-0.5 rounded-lg text-xs",
+            label: "text-xs uppercase tracking-wide text-slate-500",
+            input: "px-3 py-3 md:py-2 rounded-xl border border-slate-300 bg-white text-slate-900 placeholder-slate-500 outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 text-lg md:text-base",
+            inputName: "px-1 py-1 bg-transparent text-slate-900 text-center text-base md:text-sm outline-none border-b border-transparent hover:border-slate-400 focus:border-emerald-600 focus:ring-0 transition-colors",
+            btn: "px-4 py-3 md:py-2 rounded-2xl border border-slate-300 bg-white text-slate-900 hover:bg-slate-100 h-12 md:h-10 text-base",
+            btnPrimary: "px-4 py-3 md:py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-12 md:h-10 text-base",
+            btnSmall: "px-3 py-2 rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 text-sm",
+            total: "text-5xl md:text-6xl font-black text-rose-600 tabular-nums",
+            remain: "italic text-slate-600",
+            bar: "fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur border-t border-slate-300",
+          };
+          return theme === "dark" ? dark : light;
+        };
+        const ui = classes(theme);
 
-        const TeamGrid = ({ team }) => {
+        const download = (name, text, type="text/plain") => { const blob = new Blob([text], { type }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); };
+        const exportJSON = () => { const { history, ...data } = app; download(`pig-game-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`, JSON.stringify(data, null, 2), "application/json"); };
+        const exportCSV = () => {
+          let rows = [["mode","team","member","player","turn","score"]];
+          if (app.mode === "teams") app.teams.forEach(t => t.members.forEach(m => m.entries.forEach((v, i) => rows.push(["teams", t.name, m.name, "", i+1, v]))));
+          else app.players.forEach(p => p.entries.forEach((v,i) => rows.push(["solo", "", "", p.name, i+1, v])));
+          const csv = rows.map(r => r.map(x => `"${String(x).replace(/"/g,'""')}"`).join(",")).join("\n");
+          download(`pig-log-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`, csv, "text/csv");
+        };
+        const importJSON = () => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "application/json"; inp.onchange = (e) => { const file = e.target.files[0]; if (!file) return; const fr = new FileReader(); fr.onload = () => { try { const data = JSON.parse(fr.result); setApp(prev => ({ ...prev, ...data, history: [] })); } catch { alert("Invalid JSON"); } }; fr.readAsText(file); }; inp.click(); };
+        const shareURL = () => { const { history, ...data } = app; const b64 = btoa(encodeURIComponent(JSON.stringify(data))); const url = location.origin + location.pathname + "#s=" + b64; navigator.clipboard?.writeText(url); alert("Shareable URL copied to clipboard!"); };
+        const archiveAndNewGame = () => { const { history, ...data } = app; download(`pig-archive-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`, JSON.stringify(data, null, 2), "application/json"); resetAll(); };
+
+        const Header = () => (
+          <header className="flex items-center justify-between mb-4 md:mb-6">
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight flex items-center gap-3">
+              <img src="icon-192.png" alt="" className="w-8 h-8 rounded-xl" />
+              Pig Scorekeeper
+            </h1>
+            <div className="flex items-center gap-2">
+              <div className={`${ui.btn} text-sm`}>Target: <span className="font-semibold ml-1">100</span></div>
+              <button onClick={onUndo} disabled={app.history.length === 0} className={`${ui.btn} disabled:opacity-50`}>Undo</button>
+              <div className="relative group">
+                <button className={`${ui.btn}`}>More ▾</button>
+                <div className="absolute right-0 mt-2 hidden group-hover:block z-20">
+                  <div className={`${ui.card} p-2 min-w-[12rem]`}>
+                    <button className={`${ui.btn} w-full mb-2`} onClick={exportJSON}>Export JSON</button>
+                    <button className={`${ui.btn} w-full mb-2`} onClick={exportCSV}>Export CSV</button>
+                    <button className={`${ui.btn} w-full mb-2`} onClick={importJSON}>Import JSON</button>
+                    <button className={`${ui.btn} w-full mb-2`} onClick={shareURL}>Copy Shareable URL</button>
+                    <button className={`${ui.btn} w-full`} onClick={archiveAndNewGame}>Archive & New Game</button>
+                  </div>
+                </div>
+              </div>
+              <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className={ui.btn} title="Toggle theme">
+                {theme === "dark" ? "Light" : "Dark"}
+              </button>
+            </div>
+          </header>
+        );
+
+        const TeamGrid = ({ team, teamIndex }) => {
+          const accent = TEAM_ACCENTS[teamIndex % TEAM_ACCENTS.length];
           const members = team.members;
           const cols = Math.max(1, members.length);
           const teamNameRef = useKeepFocus(team.id, focusedId);
           return (
-            <div className={`p-4 ${card}`}>
+            <div className={`p-4 ${ui.card} ring-1 ${accent.ring}`}>
               <div className="mb-3">
                 <div className="flex items-center justify-between">
                   <div className="flex-1" />
-                  <input
-                    tabIndex={-1}
-                    ref={teamNameRef}
-                    value={team.name}
-                    onChange={(e) => { setFocusedId(team.id); renameTeam(team.id, e.target.value); }}
-                    className={`text-xl font-bold ${inputName} mx-auto`}
-                    style={{ width: "16rem" }}
-                  />
+                  <div className="flex flex-col items-center gap-1">
+                    <input tabIndex={-1} ref={teamNameRef} value={team.name} onChange={(e) => { setFocusedId(team.id); renameTeam(team.id, e.target.value); }} className={`text-xl font-extrabold ${ui.inputName}`} style={{ width: "16rem" }} />
+                    <div className={`text-xs font-medium bg-clip-text text-transparent bg-gradient-to-r ${accent.label}`}>Team</div>
+                  </div>
                   <div className="flex items-center gap-2 text-sm">
-                    <button onClick={() => addMember(team.id)} disabled={members.length >= MAX_MEMBERS} className={`${btnPrimary} disabled:opacity-50`}>Add member</button>
-                    <span className="text-xs text-slate-400">{members.length}/{MAX_MEMBERS}</span>
-                    <button onClick={() => removeTeam(team.id)} className={btn}>Remove team</button>
+                    <button onClick={() => addMember(team.id)} disabled={members.length >= MAX_MEMBERS} className={`${ui.btnPrimary} disabled:opacity-50`}>Add member</button>
+                    <span className={ui.label}>{members.length}/{MAX_MEMBERS}</span>
+                    <button onClick={() => removeTeam(team.id)} className={ui.btn}>Remove team</button>
                   </div>
                 </div>
               </div>
 
-              <div className={`mt-2 p-3 ${card} text-center`}>
-                <div className={label}>Team total</div>
-                <div className="text-5xl md:text-6xl font-black text-rose-400 tabular-nums">{teamTotal(team)}</div>
-                {isWinner(team) && <div className={`${chip} bg-emerald-600 text-white mt-1`}>Winner</div>}
+              <div className={`mt-2 p-3 ${ui.card} text-center`}>
+                <div className={ui.label}>Team total</div>
+                <div className={ui.total}>{sum(members.map(m => sum(m.entries)))}</div>
+                <div className={`${ui.chip} ${accent.chip} mt-1`}>{Math.max(0, 100 - sum(members.map(m => sum(m.entries))))} to 100</div>
               </div>
 
-              <div className={`mt-2 p-2 ${card} text-center italic text-slate-300`}>
-                {teamRemaining(team)} to 100
-              </div>
-
-              {/* Subtotals row with centered label-style names above */}
               <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {members.map(m => {
                   const nameRef = useKeepFocus(m.id + ":name", focusedId);
                   return (
-                    <div key={m.id} className={`p-2 ${card} text-center`}>
+                    <div key={m.id} className={`p-2 ${ui.card} text-center ring-1 ${accent.ring}`}>
                       <div className="flex items-center justify-center gap-2 mb-2">
-                        <input
-                          tabIndex={-1}
-                          ref={nameRef}
-                          value={m.name}
-                          onChange={(e) => { setFocusedId(m.id + ":name"); renameMember(team.id, m.id, e.target.value); }}
-                          className={inputName}
-                          style={{ width: "10rem" }}
-                        />
-                        <button onClick={() => removeMember(team.id, m.id)} className={btnSmall} title="Remove member">✕</button>
+                        <input tabIndex={-1} ref={nameRef} value={m.name} onChange={(e) => { setFocusedId(m.id + ":name"); renameMember(team.id, m.id, e.target.value); }} className={`${ui.inputName} font-semibold`} style={{ width: "10rem" }} />
+                        <span className={`${ui.chip} ${accent.chip}`}>Player</span>
+                        <button onClick={() => removeMember(team.id, m.id)} className={ui.btnSmall} title="Remove member">✕</button>
                       </div>
-                      <div className="text-xs text-slate-400">Subtotal</div>
-                      <div className="text-3xl font-bold tabular-nums text-slate-100">{memberTotal(m)}</div>
+                      <div className={ui.label}>Subtotal</div>
+                      <div className="text-3xl font-bold tabular-nums">{sum(m.entries)}</div>
                     </div>
                   );
                 })}
               </div>
 
-              {/* Per-turn entries */}
               <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {members.map(m => {
                   const inputRef = useKeepFocus(m.id + ":score", focusedId);
                   return (
-                    <div key={m.id} className={`p-2 ${card}`}>
-                      <div className="text-xs text-slate-400 mb-1 text-center">Per-turn</div>
+                    <div key={m.id} className={`p-2 ${ui.card}`}>
+                      <div className={`${ui.label} mb-1 text-center`}>Per-turn</div>
                       <ul className="min-h-[2rem] space-y-1 max-h-48 overflow-auto pr-1">
-                        {m.entries.map((v, i) => (<li key={i} className="text-sm tabular-nums text-slate-100">{v}</li>))}
+                        {m.entries.map((v, i) => (<li key={i} className="text-sm tabular-nums">{v}</li>))}
                       </ul>
                       <div className="mt-2 flex items-center gap-2">
                         <input
@@ -305,21 +313,16 @@
                           type="number"
                           inputMode="numeric"
                           value={app.pending[m.id] ?? ""}
+                          onFocus={() => setFocusedId(m.id + ":score")}
                           onChange={(e) => { setFocusedId(m.id + ":score"); setPending(m.id, e.target.value); }}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              commitPending(team.id, m.id, true);
-                              setFocusedId(m.id + ":score");
-                            } else if (e.key === "Tab") {
-                              e.preventDefault();
-                              commitPending(team.id, m.id, true);
-                              moveFocusTeams(m.id, e.shiftKey ? -1 : +1);
-                            }
+                            if (e.key === "Enter") { commitPending(memberToTeam.get(m.id), m.id, true); setFocusedId(m.id + ":score"); }
+                            else if (e.key === "Tab") { e.preventDefault(); commitPending(memberToTeam.get(m.id), m.id, true); if (!isMobile) { const idx = scoreIndexTeams.get(m.id) ?? -1; const nextIdx = (idx + (e.shiftKey?-1:1) + scoreOrderTeams.length) % scoreOrderTeams.length; setFocusedId(scoreOrderTeams[nextIdx].memberId + ":score"); } }
                           }}
-                          className={inputBase}
+                          className={ui.input}
                           placeholder="score"
                         />
-                        <button onClick={() => undoLastForMember(team.id, m.id, true)} className={btnSmall}>Undo last</button>
+                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === memberToTeam.get(m.id) ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) })); }} className={ui.btnSmall}>Undo last</button>
                       </div>
                     </div>
                   );
@@ -331,61 +334,35 @@
 
         const SoloGrid = () => {
           const cols = Math.max(1, app.players.length);
-          const card = "rounded-2xl shadow border border-slate-700 bg-slate-800";
-          const label = "text-xs uppercase tracking-wide text-slate-400";
-          const inputBase = "px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600";
-          const btnSmall = "px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs";
-          const inputName = "px-1 py-1 bg-transparent text-slate-100 text-center text-sm outline-none border-b border-transparent hover:border-slate-600 focus:border-emerald-500 focus:ring-0 transition-colors";
           return (
-            <div className={`p-4 ${card}`}>
+            <div className={`p-4 ${ui.card}`}>
               <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-                {app.players.map(p => {
+                {app.players.map((p,i) => {
                   const nameRef = useKeepFocus(p.id + ":name", focusedId);
+                  const accent = TEAM_ACCENTS[i % TEAM_ACCENTS.length];
                   return (
-                    <div key={p.id} className={`p-2 ${card}`}>
-                      <div className="flex items-center gap-2 justify-center">
-                        <input tabIndex={-1} ref={nameRef} value={p.name} onChange={(e) => { setFocusedId(p.id + ":name"); renamePlayer(p.id, e.target.value); }} className={inputName} style={{ width: "10rem" }} />
-                        <button onClick={() => removePlayer(p.id)} className={btnSmall}>✕</button>
+                    <div key={p.id} className={`p-2 ${ui.card} text-center ring-1 ${accent.ring}`}>
+                      <div className="flex items-center gap-2 justify-center mb-2">
+                        <input tabIndex={-1} ref={nameRef} value={p.name} onChange={(e) => { setFocusedId(p.id + ":name"); renamePlayer(p.id, e.target.value); }} className={`${ui.inputName} font-semibold`} style={{ width: "10rem" }} />
+                        <span className={`${ui.chip} ${accent.chip}`}>Player</span>
+                        <button onClick={() => removePlayer(p.id)} className={ui.btnSmall}>✕</button>
                       </div>
+                      <div className="text-xs uppercase tracking-wide opacity-60">Total</div>
+                      <div className={ui.total}>{sum(p.entries)}</div>
+                      <div className={`${ui.chip} mt-1`}>{Math.max(0, 100 - sum(p.entries))} to 100</div>
                     </div>
                   );
                 })}
-              </div>
-
-              <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-                {app.players.map(p => (
-                  <div key={p.id} className={`p-3 ${card} text-center`}>
-                    <div className={label}>Total</div>
-                    <div className="text-5xl md:text-6xl font-black text-rose-400 tabular-nums">{sum(p.entries)}</div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-                {app.players.map(p => (
-                  <div key={p.id} className={`p-2 ${card} text-center italic text-slate-300`}>
-                    {Math.max(0, 100 - sum(p.entries))} to 100
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-                {app.players.map(p => (
-                  <div key={p.id} className={`p-2 ${card} text-center`}>
-                    <div className="text-xs text-slate-400">Subtotal</div>
-                    <div className="text-3xl font-bold tabular-nums text-slate-100">{sum(p.entries)}</div>
-                  </div>
-                ))}
               </div>
 
               <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {app.players.map((p) => {
                   const inputRef = useKeepFocus(p.id + ":score", focusedId);
                   return (
-                    <div key={p.id} className={`p-2 ${card}`}>
-                      <div className="text-xs text-slate-400 mb-1 text-center">Per-turn</div>
+                    <div key={p.id} className={`p-2 ${ui.card}`}>
+                      <div className={`${ui.label} mb-1 text-center`}>Per-turn</div>
                       <ul className="min-h-[2rem] space-y-1 max-h-48 overflow-auto pr-1">
-                        {p.entries.map((v, j) => (<li key={j} className="text-sm tabular-nums text-slate-100">{v}</li>))}
+                        {p.entries.map((v, j) => (<li key={j} className="text-sm tabular-nums">{v}</li>))}
                       </ul>
                       <div className="mt-2 flex items-center gap-2">
                         <input
@@ -393,21 +370,16 @@
                           type="number"
                           inputMode="numeric"
                           value={app.pending[p.id] ?? ""}
+                          onFocus={() => setFocusedId(p.id + ":score")}
                           onChange={(e) => { setFocusedId(p.id + ":score"); setPending(p.id, e.target.value); }}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              commitPending("_solo", p.id, false);
-                              setFocusedId(p.id + ":score");
-                            } else if (e.key === "Tab") {
-                              e.preventDefault();
-                              commitPending("_solo", p.id, false);
-                              moveFocusSolo(p.id, e.shiftKey ? -1 : +1);
-                            }
+                            if (e.key === "Enter") { commitPending("_solo", p.id, false); setFocusedId(p.id + ":score"); }
+                            else if (e.key === "Tab") { e.preventDefault(); commitPending("_solo", p.id, false); if (!isMobile) { const idx = scoreIndexSolo.get(p.id) ?? -1; const nextIdx = (idx + (e.shiftKey?-1:1) + scoreOrderSolo.length) % scoreOrderSolo.length; setFocusedId(scoreOrderSolo[nextIdx].playerId + ":score"); } }
                           }}
-                          className={inputBase}
+                          className={ui.input}
                           placeholder="score"
                         />
-                        <button onClick={() => undoLastForMember("_solo", p.id, false)} className={btnSmall}>Undo last</button>
+                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, players: prev.players.map(x => x.id === p.id ? { ...x, entries: x.entries.slice(0, -1) } : x) })); }} className={ui.btnSmall}>Undo last</button>
                       </div>
                     </div>
                   );
@@ -417,35 +389,65 @@
           );
         };
 
-        function TeamsView() {
-          const card = "rounded-2xl shadow border border-slate-700 bg-slate-800";
-          const btnPrimary = "px-3 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500";
-          return (
-            <div className="grid md:grid-cols-2 gap-6">
-              {app.teams.map((t) => (<TeamGrid key={t.id} team={t} />))}
-              <div className="flex items-center justify-center">
-                <button onClick={addTeam} className={btnPrimary}>Add team</button>
-              </div>
+        const TeamsView = () => (
+          <div className="grid md:grid-cols-2 gap-6">
+            {app.teams.map((t, idx) => (<TeamGrid key={t.id} team={t} teamIndex={idx} />))}
+            <div className="flex items-center justify-center">
+              <button onClick={addTeam} className={ui.btnPrimary}>Add team</button>
             </div>
-          );
-        }
+          </div>
+        );
+
+        useEffect(() => { if ("serviceWorker" in navigator) { navigator.serviceWorker.register("./sw.js").catch(()=>{}); } }, []);
+
+        const BottomBar = () => (
+          <div className={`${ui.bar} py-3 px-3 md:hidden`}>
+            <div className="max-w-7xl mx-auto flex items-center gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="text-xs opacity-70">Next up</div>
+                <div className="font-semibold truncate">
+                  {(() => {
+                    if (app.mode === "teams") {
+                      if (!scoreOrderTeams.length) return "—";
+                      let curIdx = -1;
+                      if (focusedId && focusedId.endsWith(":score")) {
+                        const id = focusedId.slice(0, -6);
+                        curIdx = scoreIndexTeams.has(id) ? scoreIndexTeams.get(id) : -1;
+                      }
+                      const nextIdx = (curIdx + 1) % scoreOrderTeams.length;
+                      const { memberId, teamId } = scoreOrderTeams[nextIdx];
+                      let teamName = "Team", memberName = "Member";
+                      for (const t of app.teams) if (t.id === teamId) { teamName = t.name || teamName; const m = t.members.find(x => x.id === memberId); if (m) memberName = m.name || memberName; break; }
+                      return `${teamName} — ${memberName}`;
+                    } else {
+                      if (!scoreOrderSolo.length) return "—";
+                      let curIdx = -1;
+                      if (focusedId && focusedId.endsWith(":score")) {
+                        const id = focusedId.slice(0, -6);
+                        curIdx = scoreIndexSolo.has(id) ? scoreIndexSolo.get(id) : -1;
+                      }
+                      const nextIdx = (curIdx + 1) % scoreOrderSolo.length;
+                      const { playerId } = scoreOrderSolo[nextIdx];
+                      const p = app.players.find(x => x.id === playerId);
+                      return p ? p.name : "Player";
+                    }
+                  })()}
+                </div>
+              </div>
+              <button onClick={() => onUndo()} disabled={app.history.length === 0} className={`${ui.btn} disabled:opacity-50`}>Undo</button>
+              <button onClick={mobileSaveAndNext} className={`${ui.btnPrimary} w-40`}>Save & Next</button>
+            </div>
+          </div>
+        );
 
         return (
-          <div className="min-h-screen w-full text-slate-100 p-6">
+          <div className={ui.page}>
             <div className="max-w-7xl mx-auto">
-              <header className="flex items-center justify-between mb-6">
-                <h1 className="text-3xl font-bold tracking-tight">🐷 Pig Scorekeeper – Grid</h1>
-                <div className="flex items-center gap-2">
-                  <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-sm">Target: <span className="font-semibold">100</span></div>
-                  <button onClick={onUndo} disabled={app.history.length === 0} className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 disabled:opacity-50">Undo</button>
-                  <button onClick={resetAll} className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100">Reset all</button>
-                </div>
-              </header>
-
+              <Header />
               <div className="mb-4">
-                <div className="inline-flex rounded-2xl border border-slate-700 bg-slate-800">
-                  <button onClick={() => setApp(prev => ({ ...prev, mode: 'teams' }))} className={`px-4 py-2 rounded-2xl ${app.mode === 'teams' ? 'bg-slate-700 text-white' : 'text-slate-300'}`}>Teams</button>
-                  <button onClick={() => setApp(prev => ({ ...prev, mode: 'solo' }))} className={`px-4 py-2 rounded-2xl ${app.mode === 'solo' ? 'bg-slate-700 text-white' : 'text-slate-300'}`}>Solo</button>
+                <div className={`${ui.card} inline-flex rounded-2xl`}>
+                  <button onClick={() => setApp(prev => ({ ...prev, mode: 'teams' }))} className={`px-4 py-2 rounded-2xl ${app.mode === 'teams' ? 'bg-emerald-600 text-white' : ''}`}>Teams</button>
+                  <button onClick={() => setApp(prev => ({ ...prev, mode: 'solo' }))} className={`px-4 py-2 rounded-2xl ${app.mode === 'solo' ? 'bg-emerald-600 text-white' : ''}`}>Solo</button>
                 </div>
               </div>
 
@@ -453,14 +455,12 @@
                 <div className="space-y-4">
                   <SoloGrid />
                   <div className="flex justify-center">
-                    <button onClick={addPlayer} className="px-3 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500">Add player</button>
+                    <button onClick={addPlayer} className={ui.btnPrimary}>Add player</button>
                   </div>
                 </div>
               )}
 
-              <footer className="mt-8 text-center text-xs text-slate-400">
-                Names now use a label style (no border until focused; subtle underline). Everything else stays the same.
-              </footer>
+              <BottomBar />
             </div>
           </div>
         );
