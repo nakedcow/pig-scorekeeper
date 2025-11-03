@@ -1,6 +1,6 @@
 
-const CACHE = "pig-scorekeeper-v18";
-const ASSETS = ["./","./index.html","./manifest.webmanifest","./icon-192.png","./icon-512.png","./favicon-32.png"];
+const CACHE = "pig-scorekeeper-v19";
+const ASSETS = ["./","./index.html"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))); self.skipWaiting(); });
 self.addEventListener("activate", e => { e.waitUntil(caches.keys().then(keys => Promise.all(keys.map(k=>k===CACHE?null:caches.delete(k))))); self.clients.claim(); });
 self.addEventListener("fetch", e => {
