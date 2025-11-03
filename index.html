@@ -12,7 +12,7 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
-      /* Hide up/down steppers on number inputs */
+      /* Hide number input spinners */
       input[type=number]::-webkit-outer-spin-button,
       input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
       input[type=number] { -moz-appearance: textfield; }
@@ -24,7 +24,7 @@
       const { useEffect, useMemo, useRef, useState } = React;
       const MAX_MEMBERS = 3;
       const uid = () => Math.random().toString(36).slice(2, 10);
-      const STORAGE_KEY = "pig-grid-v17";
+      const STORAGE_KEY = "pig-grid-v18";
       const sum = (arr) => arr.reduce((a, b) => a + b, 0);
       const clampInt = (n) => { const x = Math.floor(Number(n)); return Number.isFinite(x) ? x : 0; };
 
@@ -36,12 +36,14 @@
         useEffect(() => { document.body.className = theme === "dark" ? "bg-slate-900" : "bg-slate-50"; }, [theme]);
         return [theme, setTheme];
       };
+
       const useIsMobile = () => {
         const get = () => (typeof window !== "undefined" ? window.innerWidth < 768 : false);
         const [isMobile, setIsMobile] = useState(get());
         useEffect(() => { const onResize = () => setIsMobile(get()); window.addEventListener("resize", onResize); return () => window.removeEventListener("resize", onResize); }, []);
         return isMobile;
       };
+
       let saveTimer = null;
       function usePersistedState(initial) {
         const [state, setState] = useState(() => {
@@ -66,14 +68,17 @@
         }, [state]);
         return [state, setState];
       }
+
       function useKeepFocus(id, focusedId) {
         const ref = useRef(null);
         useEffect(() => {
           if (focusedId === id && ref.current) {
             const el = ref.current;
             el.focus();
-            const len = el.value?.length ?? 0;
-            try { el.setSelectionRange(len, len); } catch {}
+            try {
+              const len = (el.value ?? "").length;
+              el.setSelectionRange(len, len);
+            } catch {}
           }
         });
         return ref;
@@ -106,10 +111,12 @@
         });
         const [focusedId, setFocusedId] = useState(null);
 
+        // history
         const makeSnapshot = (prev) => ({ mode: prev.mode, target: prev.target, teams: prev.teams, players: prev.players, pending: prev.pending });
         const pushHistory = (label) => setApp(prev => ({ ...prev, history: [...prev.history.slice(-9), { label, snapshot: makeSnapshot(prev), ts: Date.now() }] }));
         const onUndo = () => { if (app.history.length === 0) return; const last = app.history[app.history.length - 1]; setApp(prev => ({ ...prev, ...last.snapshot, history: prev.history.slice(0, -1) })); };
 
+        // CRUD
         const addTeam = () => setApp(prev => ({ ...prev, teams: [...prev.teams, { id: uid(), name: `Team ${String.fromCharCode(65 + prev.teams.length)}`, members: [] }] }));
         const removeTeam = (teamId) => setApp(prev => ({ ...prev, teams: prev.teams.filter(t => t.id !== teamId) }));
         const renameTeam = (teamId, name) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, name } : t) }));
@@ -120,69 +127,41 @@
         const removePlayer = (id) => setApp(prev => ({ ...prev, players: prev.players.filter(p => p.id !== id) }));
         const renamePlayer = (id, name) => setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === id ? { ...p, name } : p) }));
 
-        const setPending = (memberId, value) => setApp(prev => ({ ...prev, pending: { ...prev.pending, [memberId]: value } }));
-        const commitPending = (contextId, memberId, isTeams) => {
-          const raw = app.pending[memberId];
+        // scoring
+        const setPending = (id, value) => setApp(prev => ({ ...prev, pending: { ...prev.pending, [id]: value } }));
+        const commitPending = (contextId, id, isTeams) => {
+          const raw = app.pending[id];
           if (raw == null || String(raw).trim() === "") return;
           const n = clampInt(raw);
-          if (n < 0) { setPending(memberId, ""); return; }
+          if (n < 0) { setPending(id, ""); return; }
           pushHistory("+" + n);
-          if (isTeams) setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === contextId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, entries: [...m.entries, n] } : m) } : t), pending: { ...prev.pending, [memberId]: "" } }));
-          else setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === memberId ? { ...p, entries: [...p.entries, n] } : p), pending: { ...prev.pending, [memberId]: "" } }));
+          if (isTeams) setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === contextId ? { ...t, members: t.members.map(m => m.id === id ? { ...m, entries: [...m.entries, n] } : m) } : t), pending: { ...prev.pending, [id]: "" } }));
+          else setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === id ? { ...p, entries: [...p.entries, n] } : p), pending: { ...prev.pending, [id]: "" } }));
         };
-        const resetAll = () => { pushHistory("reset"); setApp(prev => ({ ...prev, teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })), players: prev.players.map(p => ({ ...p, entries: [] })), pending: {} })); };
 
+        // order for Tab rotation (A1 → B1 → A2 → B2 …)
         const scoreOrderTeams = useMemo(() => {
           if (app.mode !== "teams") return [];
           const teams = app.teams;
           const maxRows = Math.max(0, ...teams.map(t => t.members.length));
           const order = [];
-          for (let row = 0; row < maxRows; row++) for (let col = 0; col < teams.length; col++) {
-            const t = teams[col]; const m = t.members[row]; if (m) order.push({ memberId: m.id, teamId: t.id });
+          for (let row = 0; row < maxRows; row++) {
+            for (let col = 0; col < teams.length; col++) {
+              const m = teams[col].members[row];
+              if (m) order.push({ memberId: m.id, teamId: teams[col].id });
+            }
           }
           return order;
         }, [app.mode, app.teams]);
         const memberToTeam = useMemo(() => { const map = new Map(); scoreOrderTeams.forEach(o => map.set(o.memberId, o.teamId)); return map; }, [scoreOrderTeams]);
-        const scoreIndexTeams = useMemo(() => { const map = new Map(); scoreOrderTeams.forEach((o, i) => map.set(o.memberId, i)); return map; }, [scoreOrderTeams]);
+        const scoreIndexTeams = useMemo(() => { const m = new Map(); scoreOrderTeams.forEach((o,i)=>m.set(o.memberId,i)); return m; }, [scoreOrderTeams]);
+
         const scoreOrderSolo = useMemo(() => app.mode !== "solo" ? [] : app.players.map(p => ({ playerId: p.id })), [app.mode, app.players]);
-        const scoreIndexSolo = useMemo(() => { const map = new Map(); scoreOrderSolo.forEach((o, i) => map.set(o.playerId, i)); return map; }, [scoreOrderSolo]);
+        const scoreIndexSolo = useMemo(() => { const m = new Map(); scoreOrderSolo.forEach((o,i)=>m.set(o.playerId,i)); return m; }, [scoreOrderSolo]);
 
-        const moveFocusTeams = (fromMemberId, dir) => {
-          if (scoreOrderTeams.length === 0) return;
-          const idx = scoreIndexTeams.has(fromMemberId) ? scoreIndexTeams.get(fromMemberId) : -1;
-          const nextIdx = idx < 0 ? 0 : (idx + dir + scoreOrderTeams.length) % scoreOrderTeams.length;
-          const nextMemberId = scoreOrderTeams[nextIdx].memberId;
-          setFocusedId(nextMemberId + ":score");
-        };
-        const moveFocusSolo = (fromPlayerId, dir) => {
-          if (scoreOrderSolo.length === 0) return;
-          const idx = scoreIndexSolo.has(fromPlayerId) ? scoreIndexSolo.get(fromPlayerId) : -1;
-          const nextIdx = idx < 0 ? 0 : (idx + dir + scoreOrderSolo.length) % scoreOrderSolo.length;
-          const nextPlayerId = scoreOrderSolo[nextIdx].playerId;
-          setFocusedId(nextPlayerId + ":score");
-        };
-        const mobileSaveAndNext = () => {
-          if (app.mode === "teams") {
-            let memberId = null;
-            if (focusedId && focusedId.endsWith(":score")) memberId = focusedId.slice(0, -6);
-            if (!memberId && scoreOrderTeams.length) memberId = scoreOrderTeams[0].memberId;
-            if (!memberId) return;
-            const teamId = memberToTeam.get(memberId);
-            if (teamId) commitPending(teamId, memberId, true);
-            moveFocusTeams(memberId, +1);
-          } else {
-            let playerId = null;
-            if (focusedId && focusedId.endsWith(":score")) playerId = focusedId.slice(0, -6);
-            if (!playerId && scoreOrderSolo.length) playerId = scoreOrderSolo[0].playerId;
-            if (!playerId) return;
-            commitPending("_solo", playerId, false);
-            moveFocusSolo(playerId, +1);
-          }
-        };
-
-        // Header with click-to-open menu
+        // header (click-to-open menu)
         const Header = () => {
-          const menuRef = React.useRef(null);
+          const menuRef = useRef(null);
           const [open, setOpen] = useState(false);
           useEffect(() => {
             const onDocClick = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false); };
@@ -192,7 +171,6 @@
             return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onEsc); };
           }, []);
           const Btn = (props) => <button className={"px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 whitespace-nowrap"} {...props}/>;
-          const BtnPrimary = (props) => <button className={"px-3 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 whitespace-nowrap"} {...props}/>;
           return (
             <header className="flex items-center justify-between mb-4 md:mb-6">
               <h1 className="text-2xl md:text-3xl font-bold tracking-tight flex items-center gap-3">
@@ -201,17 +179,17 @@
               </h1>
               <div className="flex items-center gap-2" ref={menuRef}>
                 <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 whitespace-nowrap text-sm">Target: <span className="font-semibold ml-1">100</span></div>
-                <Btn onClick={onUndo} disabled={app.history.length === 0} className={"disabled:opacity-50 whitespace-nowrap"}>Undo</Btn>
+                <Btn onClick={onUndo} disabled={app.history.length === 0} className={"disabled:opacity-50"}>Undo</Btn>
                 <div className="relative">
-                  <Btn onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-haspopup="menu">More ▾</Btn>
+                  <Btn onClick={() => setOpen(o=>!o)} aria-expanded={open} aria-haspopup="menu">More ▾</Btn>
                   {open && (
                     <div className="absolute right-0 mt-2 z-20">
                       <div className="rounded-2xl shadow border border-slate-700 bg-slate-800 p-2 w-56">
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href=url; a.download=`pig-game-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000); }}>Export JSON</button>
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); let rows=[["mode","team","member","player","turn","score"]]; if (app.mode==="teams") app.teams.forEach(t=>t.members.forEach(m=>m.entries.forEach((v,i)=>rows.push(["teams",t.name,m.name,"",i+1,v])))); else app.players.forEach(p=>p.entries.forEach((v,i)=>rows.push(["solo","","",p.name,i+1,v]))); const csv=rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(",")).join("\n"); const blob = new Blob([csv], {type:'text/csv'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-log-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000); }}>Export CSV</button>
+                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-game-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }}>Export JSON</button>
+                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); let rows=[["mode","team","member","player","turn","score"]]; if (app.mode==="teams") app.teams.forEach(t=>t.members.forEach(m=>m.entries.forEach((v,i)=>rows.push(["teams",t.name,m.name,"",i+1,v])))); else app.players.forEach(p=>p.entries.forEach((v,i)=>rows.push(["solo","","",p.name,i+1,v]))); const csv=rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(",")).join("\n"); const blob = new Blob([csv], {type:'text/csv'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-log-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }}>Export CSV</button>
                         <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const inp=document.createElement('input'); inp.type='file'; inp.accept='application/json'; inp.onchange=(e)=>{ const file=e.target.files[0]; if(!file) return; const fr=new FileReader(); fr.onload=()=>{ try{ const data=JSON.parse(fr.result); setApp(prev=>({ ...prev, ...data, history: [] })); } catch{ alert('Invalid JSON'); } }; fr.readAsText(file); }; inp.click(); }}>Import JSON</button>
                         <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const b64=btoa(encodeURIComponent(JSON.stringify(data))); navigator.clipboard?.writeText(location.origin + location.pathname + "#s=" + b64); alert("Shareable URL copied to clipboard!"); }}>Copy URL</button>
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-archive-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(url), 1000); /* reset */ setApp(prev => ({ ...prev, teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })), players: prev.players.map(p => ({ ...p, entries: [] })), pending: {} })); }}>Archive + New Game</button>
+                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-archive-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); setApp(prev => ({ ...prev, teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })), players: prev.players.map(p => ({ ...p, entries: [] })), pending: {} })); }}>Archive + New Game</button>
                       </div>
                     </div>
                   )}
@@ -222,87 +200,43 @@
           );
         };
 
-        function useKeepFocus(id, focusedId) {
-          const ref = React.useRef(null);
-          React.useEffect(() => {
-            if (focusedId === id && ref.current) {
-              const el = ref.current;
-              el.focus();
-              const len = el.value?.length ?? 0;
-              try { el.setSelectionRange(len, len); } catch {}
-            }
-          });
-          return ref;
-        }
-
-        const classes = (theme) => {
-          const dark = {
-            inputName: "px-1 py-1 bg-transparent text-slate-100 text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 focus:ring-0 transition-colors",
-            input: "px-3 py-3 md:py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 text-lg md:text-base",
-            card: "rounded-2xl shadow border border-slate-700 bg-slate-800",
-            total: "text-5xl md:text-6xl font-black text-rose-400 tabular-nums",
-          };
-          const light = {
-            inputName: "px-1 py-1 bg-transparent text-slate-900 text-center outline-none border-b-2 border-slate-400 hover:border-slate-500 focus:border-emerald-600 focus:ring-0 transition-colors",
-            input: "px-3 py-3 md:py-2 rounded-xl border border-slate-300 bg-white text-slate-900 placeholder-slate-500 outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 text-lg md:text-base",
-            card: "rounded-2xl shadow border border-slate-300 bg-white",
-            total: "text-5xl md:text-6xl font-black text-rose-600 tabular-nums",
-          };
-          return theme === "dark" ? dark : light;
-        };
-        const ui = classes(theme);
-
         const TeamGrid = ({ team, teamIndex }) => {
           const accent = TEAM_ACCENTS[teamIndex % TEAM_ACCENTS.length];
           const members = team.members;
           const cols = Math.max(1, members.length);
           const teamNameRef = useKeepFocus(team.id, focusedId);
           return (
-            <div className={`p-4 ${ui.card} ring-1 ${accent.ring}`}>
+            <div className={`p-4 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'} ring-1 ${accent.ring}`}>
               <div className="mb-3">
                 <div className="flex items-center justify-between">
                   <div className="flex-1" />
                   <div className="flex flex-col items-center gap-1">
-                    <input
-                      tabIndex={-1}
-                      ref={teamNameRef}
-                      value={team.name}
-                      onChange={(e) => { setFocusedId(team.id); renameTeam(team.id, e.target.value); }}
-                      className={`text-2xl md:text-3xl font-black tracking-wide ${ui.inputName}`}
-                      style={{ width: "18rem" }}
-                    />
+                    <input tabIndex={-1} ref={teamNameRef} value={team.name} onChange={(e)=>{ setFocusedId(team.id); renameTeam(team.id, e.target.value); }} className={`text-2xl md:text-3xl font-black tracking-wide px-1 py-1 bg-transparent text-center outline-none border-b-2 ${theme==='dark'?'border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100':'border-slate-400 hover:border-slate-500 focus:border-emerald-600 text-slate-900'}`} style={{ width: "18rem" }} />
                     <div className={`text-xs font-medium bg-clip-text text-transparent bg-gradient-to-r ${accent.label}`}>Team</div>
                   </div>
                   <div className="flex items-center gap-2 text-sm">
-                    <button onClick={() => addMember(team.id)} disabled={members.length >= MAX_MEMBERS} className={`px-4 py-3 md:py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-12 md:h-10 text-base disabled:opacity-50 whitespace-nowrap`}>Add member</button>
+                    <button onClick={()=>addMember(team.id)} disabled={members.length>=MAX_MEMBERS} className="px-4 py-3 md:py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-12 md:h-10 text-base disabled:opacity-50 whitespace-nowrap">Add member</button>
                     <span className="text-xs uppercase tracking-wide opacity-70">{members.length}/{MAX_MEMBERS}</span>
-                    <button onClick={() => removeTeam(team.id)} className="px-4 py-3 md:py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 h-12 md:h-10 text-base whitespace-nowrap">Remove team</button>
+                    <button onClick={()=>removeTeam(team.id)} className={`px-4 py-3 md:py-2 rounded-2xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700':'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'} h-12 md:h-10 text-base whitespace-nowrap`}>Remove team</button>
                   </div>
                 </div>
               </div>
 
-              <div className={`mt-2 p-3 ${ui.card} text-center`}>
+              <div className={`mt-2 p-3 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'} text-center`}>
                 <div className="text-xs uppercase tracking-wide opacity-70">Team total</div>
-                <div className={ui.total}>{sum(members.map(m => sum(m.entries)))}</div>
-                <div className={`inline-block px-2 py-0.5 rounded-lg text-xs ${accent.chip} mt-1`}>{Math.max(0, 100 - sum(members.map(m => sum(m.entries))))} to 100</div>
+                <div className={`text-5xl md:text-6xl font-black ${theme==='dark'?'text-rose-400':'text-rose-600'} tabular-nums`}>{sum(members.map(m => sum(m.entries)))}</div>
+                <div className={`inline-block px-2 py-0.5 rounded-lg text-xs ${TEAM_ACCENTS[teamIndex % TEAM_ACCENTS.length].chip} mt-1`}>{Math.max(0, 100 - sum(members.map(m => sum(m.entries))))} to 100</div>
               </div>
 
               <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {members.map(m => {
                   const nameRef = useKeepFocus(m.id + ":name", focusedId);
                   return (
-                    <div key={m.id} className={`p-2 ${ui.card} text-center ring-1 ${accent.ring}`}>
+                    <div key={m.id} className={`p-2 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'} text-center ring-1 ${accent.ring}`}>
                       <div className="flex items-center justify-center gap-2 mb-2">
-                        <input
-                          tabIndex={-1}
-                          ref={nameRef}
-                          value={m.name}
-                          onChange={(e) => { setFocusedId(m.id + ":name"); renameMember(team.id, m.id, e.target.value); }}
-                          className={`${ui.inputName} font-bold text-lg md:text-xl`}
-                          style={{ width: "12rem" }}
-                        />
+                        <input tabIndex={-1} ref={nameRef} value={m.name} onChange={(e)=>{ setFocusedId(m.id + ":name"); renameMember(team.id, m.id, e.target.value); }} className={`font-bold text-lg md:text-xl px-1 py-1 bg-transparent text-center outline-none border-b-2 ${theme==='dark'?'border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100':'border-slate-400 hover:border-slate-500 focus:border-emerald-600 text-slate-900'}`} style={{ width: "12rem" }} />
                         <span className={`inline-block px-2 py-0.5 rounded-lg text-xs ${accent.chip}`}>Player</span>
-                        <button onClick={() => removeMember(team.id, m.id)} className="px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm" title="Remove member">✕</button>
+                        <button onClick={()=>removeMember(team.id,m.id)} className={`px-3 py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700':'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'} text-sm`} title="Remove member">✕</button>
                       </div>
                       <div className="text-xs uppercase tracking-wide opacity-70">Subtotal</div>
                       <div className="text-3xl font-bold tabular-nums">{sum(m.entries)}</div>
@@ -313,27 +247,29 @@
 
               <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {members.map(m => {
+                  const scoreRef = useKeepFocus(m.id + ":score", focusedId);
                   return (
-                    <div key={m.id} className={`p-2 ${ui.card}`}>
+                    <div key={m.id} className={`p-2 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'}`}>
                       <div className="text-xs uppercase tracking-wide opacity-70 mb-1 text-center">Per-turn</div>
                       <ul className="min-h-[2rem] space-y-1 max-h-48 overflow-auto pr-1">
                         {m.entries.map((v, i) => (<li key={i} className="text-sm tabular-nums">{v}</li>))}
                       </ul>
                       <div className="mt-2 flex items-center gap-2">
                         <input
+                          ref={scoreRef}
                           type="number"
                           inputMode="numeric"
                           value={app.pending[m.id] ?? ""}
                           onFocus={() => setFocusedId(m.id + ":score")}
-                          onChange={(e) => { setFocusedId(m.id + ":score"); setPending(m.id, e.target.value); }}
+                          onChange={(e) => { setPending(m.id, e.target.value); }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") { commitPending(memberToTeam.get(m.id), m.id, true); setFocusedId(m.id + ":score"); }
                             else if (e.key === "Tab") { e.preventDefault(); commitPending(memberToTeam.get(m.id), m.id, true); const order = scoreOrderTeams; const idx = scoreIndexTeams.get(m.id) ?? -1; const nextIdx = (idx + (e.shiftKey ? -1 : 1) + order.length) % order.length; setFocusedId(order[nextIdx].memberId + ":score"); }
                           }}
-                          className={ui.input}
+                          className={`px-3 py-3 md:py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400':'border-slate-300 bg-white text-slate-900 placeholder-slate-500'} outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 text-lg md:text-base`}
                           placeholder="score"
                         />
-                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === memberToTeam.get(m.id) ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) })); }} className="px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm">Undo last</button>
+                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === memberToTeam.get(m.id) ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) })); }} className={`px-3 py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700':'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'} text-sm`}>Undo last</button>
                       </div>
                     </div>
                   );
@@ -346,20 +282,20 @@
         const SoloGrid = () => {
           const cols = Math.max(1, app.players.length);
           return (
-            <div className={`p-4 ${ui.card}`}>
+            <div className={`p-4 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'}`}>
               <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {app.players.map((p,i) => {
                   const nameRef = useKeepFocus(p.id + ":name", focusedId);
                   const accent = TEAM_ACCENTS[i % TEAM_ACCENTS.length];
                   return (
-                    <div key={p.id} className={`p-2 ${ui.card} text-center ring-1 ${accent.ring}`}>
+                    <div key={p.id} className={`p-2 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'} text-center ring-1 ${accent.ring}`}>
                       <div className="flex items-center gap-2 justify-center mb-2">
-                        <input tabIndex={-1} ref={nameRef} value={p.name} onChange={(e) => { setFocusedId(p.id + ":name"); renamePlayer(p.id, e.target.value); }} className={`${ui.inputName} font-bold text-lg md:text-xl`} style={{ width: "12rem" }} />
+                        <input tabIndex={-1} ref={nameRef} value={p.name} onChange={(e) => { setFocusedId(p.id + ":name"); renamePlayer(p.id, e.target.value); }} className={`font-bold text-lg md:text-xl px-1 py-1 bg-transparent text-center outline-none border-b-2 ${theme==='dark'?'border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100':'border-slate-400 hover:border-slate-500 focus:border-emerald-600 text-slate-900'}`} style={{ width: "12rem" }} />
                         <span className={`inline-block px-2 py-0.5 rounded-lg text-xs ${accent.chip}`}>Player</span>
-                        <button onClick={() => removePlayer(p.id)} className="px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm">✕</button>
+                        <button onClick={() => removePlayer(p.id)} className={`px-3 py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700':'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'} text-sm`}>✕</button>
                       </div>
                       <div className="text-xs uppercase tracking-wide opacity-60">Total</div>
-                      <div className="text-5xl md:text-6xl font-black text-rose-400 tabular-nums">{sum(p.entries)}</div>
+                      <div className={`text-5xl md:text-6xl font-black ${theme==='dark'?'text-rose-400':'text-rose-600'} tabular-nums`}>{sum(p.entries)}</div>
                       <div className="inline-block px-2 py-0.5 rounded-lg text-xs mt-1">{Math.max(0, 100 - sum(p.entries))} to 100</div>
                     </div>
                   );
@@ -368,27 +304,29 @@
 
               <div className="mt-3 grid gap-2" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {app.players.map((p) => {
+                  const scoreRef = useKeepFocus(p.id + ":score", focusedId);
                   return (
-                    <div key={p.id} className={`p-2 ${ui.card}`}>
+                    <div key={p.id} className={`p-2 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'}`}>
                       <div className="text-xs uppercase tracking-wide opacity-70 mb-1 text-center">Per-turn</div>
                       <ul className="min-h-[2rem] space-y-1 max-h-48 overflow-auto pr-1">
                         {p.entries.map((v, j) => (<li key={j} className="text-sm tabular-nums">{v}</li>))}
                       </ul>
                       <div className="mt-2 flex items-center gap-2">
                         <input
+                          ref={scoreRef}
                           type="number"
                           inputMode="numeric"
                           value={app.pending[p.id] ?? ""}
                           onFocus={() => setFocusedId(p.id + ":score")}
-                          onChange={(e) => { setFocusedId(p.id + ":score"); setPending(p.id, e.target.value); }}
+                          onChange={(e) => { setPending(p.id, e.target.value); }}
                           onKeyDown={(e) => {
                             if (e.key === "Enter") { commitPending("_solo", p.id, false); setFocusedId(p.id + ":score"); }
                             else if (e.key === "Tab") { e.preventDefault(); commitPending("_solo", p.id, false); const order = scoreOrderSolo; const idx = scoreIndexSolo.get(p.id) ?? -1; const nextIdx = (idx + (e.shiftKey ? -1 : 1) + order.length) % order.length; setFocusedId(order[nextIdx].playerId + ":score"); }
                           }}
-                          className={ui.input}
+                          className={`px-3 py-3 md:py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400':'border-slate-300 bg-white text-slate-900 placeholder-slate-500'} outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 text-lg md:text-base`}
                           placeholder="score"
                         />
-                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, players: prev.players.map(x => x.id === p.id ? { ...x, entries: x.entries.slice(0, -1) } : x) })); }} className="px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm">Undo last</button>
+                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, players: prev.players.map(x => x.id === p.id ? { ...x, entries: x.entries.slice(0, -1) } : x) })); }} className={`px-3 py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700':'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'} text-sm`}>Undo last</button>
                       </div>
                     </div>
                   );
@@ -417,12 +355,12 @@
                 <div className="font-semibold truncate">
                   {(() => {
                     if (app.mode === "teams") {
-                      const teams = scoreOrderTeams;
-                      if (!teams.length) return "—";
+                      const order = scoreOrderTeams;
+                      if (!order.length) return "—";
                       let curIdx = -1;
                       if (focusedId && focusedId.endsWith(":score")) { const id = focusedId.slice(0, -6); curIdx = scoreIndexTeams.has(id) ? scoreIndexTeams.get(id) : -1; }
-                      const nextIdx = (curIdx + 1) % teams.length;
-                      const { memberId, teamId } = teams[nextIdx];
+                      const nextIdx = (curIdx + 1) % order.length;
+                      const { memberId, teamId } = order[nextIdx];
                       let teamName = "Team", memberName = "Member";
                       for (const t of app.teams) if (t.id === teamId) { teamName = t.name || teamName; const m = t.members.find(x => x.id === memberId); if (m) memberName = m.name || memberName; break; }
                       return `${teamName} — ${memberName}`;
@@ -439,8 +377,33 @@
                   })()}
                 </div>
               </div>
-              <button onClick={() => onUndo()} disabled={app.history.length === 0} className="px-4 py-3 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 disabled:opacity-50 whitespace-nowrap">Undo</button>
-              <button onClick={mobileSaveAndNext} className="px-4 py-3 rounded-2xl bg-emerald-600 text-white w-40 whitespace-nowrap">Save & Next</button>
+              <button onClick={() => onUndo()} disabled={app.history.length === 0} className={`px-4 py-3 rounded-2xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-100':'border-slate-300 bg-white text-slate-900'} disabled:opacity-50 whitespace-nowrap`}>Undo</button>
+              <button onClick={() => {
+                if (app.mode === "teams") {
+                  let id = null;
+                  if (focusedId && focusedId.endsWith(":score")) id = focusedId.slice(0, -6);
+                  const firstId = scoreOrderTeams[0]?.memberId;
+                  id = id || firstId;
+                  if (!id) return;
+                  const teamId = memberToTeam.get(id);
+                  if (teamId) commitPending(teamId, id, true);
+                  const order = scoreOrderTeams;
+                  const idx = scoreIndexTeams.get(id) ?? -1;
+                  const nextIdx = (idx + 1) % order.length;
+                  setFocusedId(order[nextIdx].memberId + ":score");
+                } else {
+                  let id = null;
+                  if (focusedId && focusedId.endsWith(":score")) id = focusedId.slice(0, -6);
+                  const firstId = scoreOrderSolo[0]?.playerId;
+                  id = id || firstId;
+                  if (!id) return;
+                  commitPending("_solo", id, false);
+                  const order = scoreOrderSolo;
+                  const idx = scoreIndexSolo.get(id) ?? -1;
+                  const nextIdx = (idx + 1) % order.length;
+                  setFocusedId(order[nextIdx].playerId + ":score");
+                }
+              }} className="px-4 py-3 rounded-2xl bg-emerald-600 text-white w-40 whitespace-nowrap">Save & Next</button>
             </div>
           </div>
         );
