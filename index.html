@@ -19,20 +19,17 @@
     <div id="root"></div>
     <script type="text/babel" data-presets="react,env">
       const { useEffect, useMemo, useRef, useState } = React;
-      const APP_VERSION = "v24";
+      const APP_VERSION = "v25";
       const MAX_MEMBERS = 3;
       const uid = () => Math.random().toString(36).slice(2, 10);
-      const STORAGE_KEY = "pig-grid-v19"; // keep storage key so existing data persists
+      const STORAGE_KEY = "pig-grid-v19";
       const sum = (arr) => arr.reduce((a, b) => a + b, 0);
       const clampInt = (n) => { const x = Math.floor(Number(n)); return Number.isFinite(x) ? x : 0; };
 
-      const useTheme = (initial="dark") => {
-        const [theme, setTheme] = useState(() => {
-          try { return localStorage.getItem(STORAGE_KEY + ":theme") || initial; } catch { return initial; }
-        });
-        useEffect(() => { try { localStorage.setItem(STORAGE_KEY + ":theme", theme); } catch {} }, [theme]);
-        useEffect(() => { document.body.className = theme === "dark" ? "bg-slate-900" : "bg-slate-50"; }, [theme]);
-        return [theme, setTheme];
+      // Force dark theme only
+      const useTheme = () => {
+        useEffect(() => { document.body.className = "bg-slate-900"; }, []);
+        return ["dark", () => {}];
       };
 
       const useIsMobile = () => {
@@ -54,7 +51,7 @@
               return { ...initial, ...loaded, history: [] };
             }
             const raw = localStorage.getItem(STORAGE_KEY);
-              if (raw) return { ...initial, ...JSON.parse(raw), history: [] };
+            if (raw) return { ...initial, ...JSON.parse(raw), history: [] };
           } catch {}
           return initial;
         });
@@ -92,7 +89,7 @@
 
       function App() {
         const isMobile = useIsMobile();
-        const [theme, setTheme] = useTheme("dark");
+        const [theme] = useTheme(); // always 'dark'
         const [app, setApp] = usePersistedState({
           mode: "teams",
           target: 100,
@@ -112,6 +109,17 @@
         const makeSnapshot = (prev) => ({ mode: prev.mode, target: prev.target, teams: prev.teams, players: prev.players, pending: prev.pending });
         const pushHistory = (label) => setApp(prev => ({ ...prev, history: [...prev.history.slice(-9), { label, snapshot: makeSnapshot(prev), ts: Date.now() }] }));
         const onUndo = () => { if (app.history.length === 0) return; const last = app.history[app.history.length - 1]; setApp(prev => ({ ...prev, ...last.snapshot, history: prev.history.slice(0, -1) })); };
+
+        const hardReset = () => {
+          if (!confirm("Reset scores and start a new game? This does not archive.")) return;
+          setApp(prev => ({
+            ...prev,
+            teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })),
+            players: prev.players.map(p => ({ ...p, entries: [] })),
+            pending: {},
+            history: []
+          }));
+        };
 
         const addTeam = () => setApp(prev => ({ ...prev, teams: [...prev.teams, { id: uid(), name: `Team ${String.fromCharCode(65 + prev.teams.length)}`, members: [] }] }));
         const removeTeam = (teamId) => setApp(prev => ({ ...prev, teams: prev.teams.filter(t => t.id !== teamId) }));
@@ -165,32 +173,28 @@
           }, []);
           const Btn = (props) => <button className={"px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 whitespace-nowrap"} {...props}/>;
           return (
-            <header className="flex items-center justify-between mb-4 md:mb-6">
-              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pig Scorekeeper</h1>
-              <div className="flex items-center gap-2" ref={menuRef}>
-                <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 whitespace-nowrap text-sm">Target: <span className="font-semibold ml-1">100</span></div>
+            <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
+              <div className="justify-self-start">
+                <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pig Scorekeeper</h1>
+              </div>
+              <div className="justify-self-center">
+                <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 text-sm md:text-base whitespace-nowrap">
+                  <span className="font-semibold">Goal:</span> First to 100 points
+                </div>
+              </div>
+              <div className="justify-self-end flex items-center gap-2" ref={menuRef}>
                 <Btn onClick={onUndo} disabled={app.history.length === 0} className={"disabled:opacity-50"}>Undo</Btn>
+                <Btn onClick={hardReset} title="Reset scores (no archive)">Reset</Btn>
                 <div className="relative">
                   <Btn onClick={() => setOpen(o=>!o)} aria-expanded={open} aria-haspopup="menu">More ▾</Btn>
                   {open && (
                     <div className="absolute right-0 mt-2 z-20">
                       <div className="rounded-2xl shadow border border-slate-700 bg-slate-800 p-2 w-56">
                         <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-game-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }}>Export JSON</button>
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); let rows=[["mode","team","member","player","turn","score"]]; if (app.mode==="teams") app.teams.forEach(t=>t.members.forEach(m=>m.entries.forEach((v,i)=>rows.push(["teams",t.name,m.name,"",i+1,v])))); else app.players.forEach(p=>p.entries.forEach((v,i)=>rows.push(["solo","","",p.name,i+1,v]))); const csv=rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(",")).join("\n"); const blob = new Blob([csv], {type:'text/csv'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-log-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }}>Export CSV</button>
+                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); let rows=[["mode","team","member","player","turn","score"]]; if (app.mode==="teams") app.teams.forEach(t=>t.members.forEach(m=>m.entries.forEach((v,i)=>rows.push(["teams",t.name,m.name,"",i+1,v])))); else app.players.forEach(p=>p.entries.forEach((v,i)=>rows.push(["solo","","",p.name,i+1,v]))); const csv=rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(",")).join("\n"); const blob= new Blob([csv], {type:'text/csv'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-log-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }}>Export CSV</button>
                         <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const inp=document.createElement('input'); inp.type='file'; inp.accept='application/json'; inp.onchange=(e)=>{ const file=e.target.files[0]; if(!file) return; const fr=new FileReader(); fr.onload=()=>{ try{ const data=JSON.parse(fr.result); setApp(prev=>({ ...prev, ...data, history: [] })); } catch{ alert('Invalid JSON'); } }; fr.readAsText(file); }; inp.click(); }}>Import JSON</button>
                         <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const b64=btoa(encodeURIComponent(JSON.stringify(data))); navigator.clipboard?.writeText(location.origin + location.pathname + "#s=" + b64); alert("Shareable URL copied to clipboard!"); }}>Copy URL</button>
                         <div className="h-px bg-slate-700 my-1"></div>
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => {
-                          setOpen(false);
-                          if (!confirm("Reset scores and start a new game? This does not archive.")) return;
-                          setApp(prev => ({
-                            ...prev,
-                            teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })),
-                            players: prev.players.map(p => ({ ...p, entries: [] })),
-                            pending: {},
-                            history: []
-                          }));
-                        }}>Reset (New Game)</button>
                         <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => {
                           setOpen(false);
                           const { history, ...data } = app;
@@ -209,7 +213,6 @@
                     </div>
                   )}
                 </div>
-                <Btn onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme">{theme === "dark" ? "Light" : "Dark"}</Btn>
               </div>
             </header>
           );
@@ -222,25 +225,25 @@
           const teamNameRef = useKeepFocus(team.id, focusedId);
           const condensed = members.length >= 3;
           return (
-            <div className={`p-3 md:p-4 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'} ring-1 ${accent.ring}`}>
+            <div className={`p-3 md:p-4 rounded-2xl shadow border border-slate-700 bg-slate-800 ring-1 ${accent.ring}`}>
               <div className="mb-2 md:mb-3">
                 <div className="flex items-center justify-between">
                   <div className="flex-1" />
                   <div className="flex flex-col items-center gap-1">
-                    <input tabIndex={-1} ref={teamNameRef} value={team.name} onChange={(e)=>{ setFocusedId(team.id); renameTeam(team.id, e.target.value); }} className={`text-2xl md:text-3xl font-black tracking-wide px-1 py-1 bg-transparent text-center outline-none border-b-2 ${theme==='dark'?'border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100':'border-slate-400 hover:border-slate-500 focus:border-emerald-600 text-slate-900'}`} style={{ width: "18rem" }} />
+                    <input tabIndex={-1} ref={teamNameRef} value={team.name} onChange={(e)=>{ setFocusedId(team.id); renameTeam(team.id, e.target.value); }} className={`text-2xl md:text-3xl font-black tracking-wide px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100`} style={{ width: "18rem" }} />
                     <div className={`text-xs font-medium bg-clip-text text-transparent bg-gradient-to-r ${accent.label}`}>Team</div>
                   </div>
                   <div className="flex items-center gap-2 text-sm">
                     <button onClick={()=>addMember(team.id)} disabled={members.length>=MAX_MEMBERS} className="px-3 md:px-4 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-10 md:h-10 text-sm md:text-base disabled:opacity-50 whitespace-nowrap">Add member</button>
                     <span className="text-xs uppercase tracking-wide opacity-70">{members.length}/{MAX_MEMBERS}</span>
-                    <button onClick={()=>removeTeam(team.id)} className={`px-3 md:px-4 py-2 rounded-2xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700':'border-slate-300 bg-white text-slate-900 hover:bg-slate-100'} h-10 md:h-10 text-sm md:text-base whitespace-nowrap`}>Remove team</button>
+                    <button onClick={()=>removeTeam(team.id)} className="px-3 md:px-4 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 h-10 md:h-10 text-sm md:text-base whitespace-nowrap">Remove team</button>
                   </div>
                 </div>
               </div>
 
-              <div className={`p-2 md:p-3 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'} text-center`}>
+              <div className="p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center">
                 <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70">Team total</div>
-                <div className={`${condensed?'text-4xl md:text-5xl':'text-5xl md:text-6xl'} font-black ${theme==='dark'?'text-rose-400':'text-rose-600'} tabular-nums`}>{sum(members.map(m => sum(m.entries)))}</div>
+                <div className={`${condensed?'text-4xl md:text-5xl':'text-5xl md:text-6xl'} font-black text-rose-400 tabular-nums`}>{sum(members.map(m => sum(m.entries)))}</div>
                 <div className={`inline-block px-2 py-0.5 rounded-lg text-[10px] md:text-xs ${accent.chip} mt-1`}>{Math.max(0, 100 - sum(members.map(m => sum(m.entries))))} to 100</div>
               </div>
 
@@ -249,11 +252,11 @@
                 {members.map(m => {
                   const nameRef = useKeepFocus(m.id + ":name", focusedId);
                   return (
-                    <div key={m.id} className={`relative p-2 md:p-3 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'} text-center ring-1 ${accent.ring}`}>
+                    <div key={m.id} className={`relative p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center ring-1 ${accent.ring}`}>
                       {/* Small pinned X */}
-                      <button onClick={()=>removeMember(team.id,m.id)} className={`absolute top-1 right-1 md:top-2 md:right-2 rounded-md border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700':'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'} text-[10px] md:text-xs px-1.5 py-0.5`} title="Remove member">×</button>
+                      <button onClick={()=>removeMember(team.id,m.id)} className="absolute top-1 right-1 md:top-2 md:right-2 rounded-md border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-[10px] md:text-xs px-1.5 py-0.5" title="Remove member">×</button>
                       <div className="flex items-center justify-center gap-2 mb-1 md:mb-2">
-                        <input tabIndex={-1} ref={nameRef} value={m.name} onChange={(e)=>{ setFocusedId(m.id + ":name"); renameMember(team.id, m.id, e.target.value); }} className={`font-bold ${condensed?'text-sm md:text-lg':'text-lg md:text-xl'} px-1 py-1 bg-transparent text-center outline-none border-b-2 ${theme==='dark'?'border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100':'border-slate-400 hover:border-slate-500 focus:border-emerald-600 text-slate-900'}`} style={{ width: condensed ? "8rem" : "12rem" }} />
+                        <input tabIndex={-1} ref={nameRef} value={m.name} onChange={(e)=>{ setFocusedId(m.id + ":name"); renameMember(team.id, m.id, e.target.value); }} className={`font-bold ${condensed?'text-sm md:text-lg':'text-lg md:text-xl'} px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100`} style={{ width: condensed ? "8rem" : "12rem" }} />
                       </div>
                       <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70">Subtotal</div>
                       <div className={`${condensed?'text-2xl md:text-3xl':'text-3xl md:text-4xl'} font-bold tabular-nums`}>{sum(m.entries)}</div>
@@ -267,7 +270,7 @@
                 {members.map(m => {
                   const scoreRef = useKeepFocus(m.id + ":score", focusedId);
                   return (
-                    <div key={m.id} className={`p-2 md:p-3 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'}`}>
+                    <div key={m.id} className="p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800">
                       <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70 mb-1 text-center">Per-turn</div>
                       <ul className="min-h-[1.25rem] md:min-h-[1.75rem] space-y-0.5 max-h-24 md:max-h-28 overflow-auto pr-1">
                         {m.entries.map((v, i) => (<li key={i} className="text-[11px] md:text-sm tabular-nums">{v}</li>))}
@@ -284,11 +287,11 @@
                             if (e.key === "Enter") { commitPending(memberToTeam.get(m.id), m.id, true); setFocusedId(m.id + ":score"); }
                             else if (e.key === "Tab") { e.preventDefault(); commitPending(memberToTeam.get(m.id), m.id, true); const order = scoreOrderTeams; const idx = scoreIndexTeams.get(m.id) ?? -1; const nextIdx = (idx + (e.shiftKey ? -1 : 1) + order.length) % order.length; setFocusedId(order[nextIdx].memberId + ":score"); }
                           }}
-                          className={`${condensed?'basis-1/2 grow-0 w-1/2':'flex-1'} min-w-0 px-2 md:px-3 py-2 md:py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400':'border-slate-300 bg-white text-slate-900 placeholder-slate-500'} outline-none focus:ring-2 focus:ring-emerald-600 ${condensed?'h-10 text-sm md:text-sm':'h-12 md:h-10 text-lg md:text-base'}`}
+                          className={`${(members.length>=3)?'basis-1/2 grow-0 w-1/2':'flex-1'} min-w-0 px-2 md:px-3 py-2 md:py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600 ${(members.length>=3)?'h-10 text-sm md:text-sm':'h-12 md:h-10 text-lg md:text-base'}`}
                           placeholder="score"
                         />
                         <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === memberToTeam.get(m.id) ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) })); }}
-                          className={`w-10 h-10 md:w-10 md:h-10 grid place-items-center rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700':'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'} ${condensed?'text-base':'text-lg'}`}
+                          className="w-10 h-10 md:w-10 md:h-10 grid place-items-center rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-base"
                           title="Undo last" aria-label="Undo last">↶</button>
                       </div>
                     </div>
@@ -303,19 +306,19 @@
           const colsStyle = { gridTemplateColumns: `repeat(auto-fit, minmax(240px, 1fr))` };
           const many = app.players.length >= 3;
           return (
-            <div className={`p-4 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'}`}>
+            <div className="p-4 rounded-2xl shadow border border-slate-700 bg-slate-800">
               <div className="grid gap-2" style={colsStyle}>
                 {app.players.map((p,i) => {
                   const nameRef = useKeepFocus(p.id + ":name", focusedId);
                   const accent = TEAM_ACCENTS[i % TEAM_ACCENTS.length];
                   return (
-                    <div key={p.id} className={`p-2 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'} text-center ring-1 ${accent.ring}`}>
+                    <div key={p.id} className={`p-2 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center ring-1 ${accent.ring}`}>
                       <div className="flex items-center gap-2 justify-center mb-2">
-                        <input tabIndex={-1} ref={nameRef} value={p.name} onChange={(e) => { setFocusedId(p.id + ":name"); renamePlayer(p.id, e.target.value); }} className={`font-bold ${many?'text-base md:text-lg':'text-lg md:text-xl'} px-1 py-1 bg-transparent text-center outline-none border-b-2 ${theme==='dark'?'border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100':'border-slate-400 hover:border-slate-500 focus:border-emerald-600 text-slate-900'}`} style={{ width: many ? "10rem" : "12rem" }} />
-                        <button onClick={() => removePlayer(p.id)} className={`px-3 py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700':'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'} text-sm`}>✕</button>
+                        <input tabIndex={-1} ref={nameRef} value={p.name} onChange={(e) => { setFocusedId(p.id + ":name"); renamePlayer(p.id, e.target.value); }} className={`font-bold ${many?'text-base md:text-lg':'text-lg md:text-xl'} px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100`} style={{ width: many ? "10rem" : "12rem" }} />
+                        <button onClick={() => removePlayer(p.id)} className="px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm">✕</button>
                       </div>
                       <div className="text-xs uppercase tracking-wide opacity-60">Total</div>
-                      <div className={`${many?'text-4xl md:text-5xl':'text-5xl md:text-6xl'} font-black ${theme==='dark'?'text-rose-400':'text-rose-600'} tabular-nums`}>{sum(p.entries)}</div>
+                      <div className={`${many?'text-4xl md:text-5xl':'text-5xl md:text-6xl'} font-black text-rose-400 tabular-nums`}>{sum(p.entries)}</div>
                       <div className="inline-block px-2 py-0.5 rounded-lg text-xs mt-1">{Math.max(0, 100 - sum(p.entries))} to 100</div>
                     </div>
                   );
@@ -326,7 +329,7 @@
                 {app.players.map((p) => {
                   const scoreRef = useKeepFocus(p.id + ":score", focusedId);
                   return (
-                    <div key={p.id} className={`p-2 rounded-2xl shadow border ${theme==='dark'?'border-slate-700 bg-slate-800':'border-slate-300 bg-white'}`}>
+                    <div key={p.id} className="p-2 rounded-2xl shadow border border-slate-700 bg-slate-800">
                       <div className="text-xs uppercase tracking-wide opacity-70 mb-1 text-center">Per-turn</div>
                       <ul className="min-h-[2rem] space-y-1 max-h-40 overflow-auto pr-1">
                         {p.entries.map((v, j) => (<li key={j} className="text-sm tabular-nums">{v}</li>))}
@@ -343,10 +346,10 @@
                             if (e.key === "Enter") { commitPending("_solo", p.id, false); setFocusedId(p.id + ":score"); }
                             else if (e.key === "Tab") { e.preventDefault(); commitPending("_solo", p.id, false); const order = scoreOrderSolo; const idx = scoreIndexSolo.get(p.id) ?? -1; const nextIdx = (idx + (e.shiftKey ? -1 : 1) + order.length) % order.length; setFocusedId(order[nextIdx].playerId + ":score"); }
                           }}
-                          className={`flex-1 px-3 py-2 rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400':'border-slate-300 bg-white text-slate-900 placeholder-slate-500'} outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 ${many?'text-base md:text-sm':'text-lg md:text-base'}`}
+                          className={`flex-1 px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 ${many?'text-base md:text-sm':'text-lg md:text-base'}`}
                           placeholder="score"
                         />
-                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, players: prev.players.map(x => x.id === p.id ? { ...x, entries: x.entries.slice(0, -1) } : x) })); }} className={`w-10 h-10 grid place-items-center rounded-xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700':'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'} text-lg`} title="Undo last" aria-label="Undo last">↶</button>
+                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, players: prev.players.map(x => x.id === p.id ? { ...x, entries: x.entries.slice(0, -1) } : x) })); }} className="w-10 h-10 grid place-items-center rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-lg" title="Undo last" aria-label="Undo last">↶</button>
                       </div>
                     </div>
                   );
@@ -368,7 +371,7 @@
         useEffect(() => { if ("serviceWorker" in navigator) { navigator.serviceWorker.register("./sw.js").catch(()=>{}); } }, []);
 
         const BottomBar = () => (
-          <div className={`fixed bottom-0 left-0 right-0 z-50 ${theme==='dark'?'bg-slate-900/95 border-t border-slate-700':'bg-white/95 border-t border-slate-300'} backdrop-blur py-3 px-3 md:hidden`}>
+          <div className="fixed bottom-0 left-0 right-0 z-50 bg-slate-900/95 border-t border-slate-700 backdrop-blur py-3 px-3 md:hidden">
             <div className="max-w-7xl mx-auto flex items-center gap-3">
               <div className="flex-1 min-w-0">
                 <div className="text-xs opacity-70">Next up</div>
@@ -398,7 +401,7 @@
                   })()}
                 </div>
               </div>
-              <button onClick={() => onUndo()} disabled={app.history.length === 0} className={`px-4 py-3 rounded-2xl border ${theme==='dark'?'border-slate-700 bg-slate-800 text-slate-100':'border-slate-300 bg-white text-slate-900'} disabled:opacity-50 whitespace-nowrap`}>Undo</button>
+              <button onClick={() => onUndo()} disabled={app.history.length === 0} className="px-4 py-3 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 disabled:opacity-50 whitespace-nowrap">Undo</button>
               <button onClick={() => {
                 if (app.mode === "teams") {
                   let id = null;
