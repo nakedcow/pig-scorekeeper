@@ -27,7 +27,7 @@
 
     <script type="text/babel" data-presets="react,env">
       const { useEffect, useMemo, useRef, useState, memo } = React;
-      const APP_VERSION = "v53 (desktop = v50; mobile revamped)";
+      const APP_VERSION = "V1.54";
       const MAX_MEMBERS = 3;
       const uid = () => Math.random().toString(36).slice(2, 10);
       const STORAGE_KEY = "pig-grid-v19";
@@ -278,6 +278,23 @@
         const mobileInputRefs = useRef({});
         const setMobileRef = (teamId, el) => { mobileInputRefs.current[teamId] = el; };
 
+        // Keyboard-aware bottom dock using VisualViewport, set style.bottom (not transform) to avoid blur
+        function useKeyboardAwareBottom(ref){
+          useEffect(()=>{
+            const vv = window.visualViewport;
+            if (!vv || !ref.current) return;
+            const el = ref.current;
+            const apply = () => {
+              const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+              el.style.bottom = kb + "px";
+            };
+            vv.addEventListener('resize', apply);
+            vv.addEventListener('scroll', apply);
+            apply();
+            return () => { vv.removeEventListener('resize', apply); vv.removeEventListener('scroll', apply); };
+          }, [ref]);
+        }
+
         const Header = () => (
           <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
             <div className="justify-self-start">
@@ -295,7 +312,7 @@
           </header>
         );
 
-        // ----- DESKTOP (exact v50 behavior) -----
+        // ----- DESKTOP (unchanged from v50) -----
         const TeamCardDesktop = ({ team }) => {
           const members = team.members;
           const cols = Math.max(1, members.length);
@@ -420,7 +437,10 @@
         // ----- MOBILE top scoreboard + bottom scoring dock -----
         const MobileTopBar = () => (
           <div className="md:hidden fixed top-0 left-0 right-0 z-40 border-b border-slate-700 bg-slate-900/95 backdrop-blur">
-            <div className="px-3 py-2 text-center text-[12px] text-slate-300">Goal: First to 100 points wins!</div>
+            <div className="px-3 py-2 flex items-center justify-between text-slate-300">
+              <div className="text-[12px]">Goal: First to 100 points wins!</div>
+              <button onClick={hardReset} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
+            </div>
             <div className="px-3 pb-2 grid grid-cols-2 gap-3 max-w-7xl mx-auto">
               {app.teams.map((t)=> (
                 <div key={t.id} id={`team-${t.id}-mobile`}
@@ -428,11 +448,11 @@
                      style={{ boxShadow: '0 0 0 1px var(--team-color)' }}>
                   <div className="flex items-center justify-between">
                     <button onClick={()=>setPickerForTeam(t.id)} className="w-6 h-6 rounded-full border border-slate-700" style={{ background: 'var(--team-color)' }} title="Pick team color"></button>
-                    <div className="text-xs text-slate-400">to 100: <span style={{ color: 'var(--team-color)' }}>{Math.max(0, 100 - teamTotal(t))}</span></div>
+                    <div className="text-base text-slate-300">to 100: <span className="font-semibold" style={{ color: 'var(--team-color)' }}>{Math.max(0, 100 - teamTotal(t))}</span></div>
                   </div>
                   <div className="mt-1 text-center">
                     <div className="text-[10px] uppercase tracking-wide opacity-70">{t.name}</div>
-                    <div className="text-4xl font-black text-white tabular-nums">{teamTotal(t)}</div>
+                    <div className="text-6xl font-black text-white tabular-nums leading-none">{teamTotal(t)}</div>
                   </div>
                   <div className="mt-1 flex items-center justify-center gap-2">
                     <button onClick={()=>undoLastTeamOnly(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
@@ -444,29 +464,12 @@
           </div>
         );
 
-        // Keyboard-aware bottom dock using VisualViewport
-        function useKeyboardAware(ref){
-          useEffect(()=>{
-            const vv = window.visualViewport;
-            if (!vv || !ref.current) return;
-            const el = ref.current;
-            const update = () => {
-              const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-              el.style.transform = `translateY(-${kb}px)`;
-            };
-            vv.addEventListener('resize', update);
-            vv.addEventListener('scroll', update);
-            update();
-            return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
-          }, [ref]);
-        }
-
         const MobileBottomDock = () => {
           const ref = useRef(null);
-          useKeyboardAware(ref);
+          useKeyboardAwareBottom(ref);
           return (
-            <div ref={ref} className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-slate-700 bg-slate-900/95 backdrop-blur">
-              <div className="max-w-7xl mx-auto px-3 py-2 grid grid-cols-2 gap-3">
+            <div ref={ref} className="md:hidden fixed left-0 right-0 z-50 border-t border-slate-700 bg-slate-900/95 backdrop-blur" style={{ bottom: 0 }}>
+              <div className="max-w-7xl mx-auto px-3 py-2 grid grid-cols-2 gap-3 relative">
                 {app.teams.map((t, idx) => (
                   <div key={t.id} id={`mobile-team-${t.id}`} className="p-2 rounded-2xl border border-slate-700 bg-slate-800" style={{ boxShadow: `0 0 0 1px ${t.color}` }}>
                     <div className="text-xs mb-1 flex items-center justify-between">
@@ -475,28 +478,31 @@
                     </div>
                     <div className="flex items-center gap-2">
                       <input
-                        type="number" inputMode="numeric" placeholder="score"
+                        ref={el => setMobileRef(t.id, el)}
+                        type="number"
+                        inputMode="numeric"
+                        enterKeyHint="next"
+                        autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
+                        pattern="[0-9]*"
+                        placeholder="score"
                         value={app.mobilePending[t.id] ?? ""}
                         onChange={(e)=> setMobilePending(t.id, e.target.value)}
                         onKeyDown={(e)=>{
                           if (e.key === "Enter") {
                             commitMobilePending(t.id);
                             const other = app.teams[(idx+1)%app.teams.length]?.id;
-                            if (other) {
-                              const el = document.querySelector(`#mobile-team-${other} input[type="number"]`);
-                              if (el) el.focus();
-                            }
+                            if (other) { mobileInputRefs.current[other]?.focus(); }
                           }
                         }}
-                        className="flex-1 min-w-0 h-11 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600"
+                        className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600"
                       />
-                      <button onClick={()=>commitMobilePending(t.id)} className="px-3 h-11 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add</button>
-                      <button onClick={()=>undoLastTeamOnly(t.id)} className="px-2 h-11 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Undo last team">↶</button>
+                      <button onClick={()=>commitMobilePending(t.id)} className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add</button>
+                      <button onClick={()=>undoLastTeamOnly(t.id)} className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Undo last team">↶</button>
                     </div>
                   </div>
                 ))}
+                <div className="absolute right-2 -bottom-5 text-[10px] text-slate-400 opacity-70">{APP_VERSION}</div>
               </div>
-              <div className="text-center text-[10px] text-slate-400 py-1">{APP_VERSION}</div>
             </div>
           );
         };
@@ -504,7 +510,21 @@
         return (
           <div className="min-h-screen w-full text-slate-100 pb-[13rem] md:pb-0">
             <div className="max-w-7xl mx-auto p-3 md:p-6">
-              <Header />
+              <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
+                <div className="justify-self-start">
+                  <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pig Scorekeeper</h1>
+                </div>
+                <div className="justify-self-center">
+                  <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 text-sm md:text-base whitespace-nowrap">
+                    <span className="font-semibold">Goal:</span> First to 100 points wins!
+                  </div>
+                </div>
+                <div className="justify-self-end flex items-center gap-2">
+                  <button onClick={onUndo} disabled={!app.history.length} className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 disabled:opacity-50">Undo</button>
+                  <button onClick={hardReset} className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100">Reset</button>
+                </div>
+              </header>
+
               <MobileTopBar />
               <div className="pt-[180px] md:pt-0 grid md:grid-cols-2 gap-6">
                 {app.teams.map(t => <TeamCardDesktop key={t.id} team={t} />)}
