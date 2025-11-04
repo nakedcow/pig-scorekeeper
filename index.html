@@ -3,269 +3,352 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-    <meta name="theme-color" content="#0f172a" />
     <title>Pig Scorekeeper</title>
+    <!-- Tailwind for styling (no defer to avoid FOUC/ordering issues) -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React + ReactDOM BEFORE Babel + our JSX -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- iro.js (wheel) -->
+    <script src="https://cdn.jsdelivr.net/npm/@jaames/iro@5"></script>
+    <!-- Babel to run JSX inline -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <style>
+      body { background: #0f172a; color: #e2e8f0; }
       input[type=number]::-webkit-outer-spin-button,
       input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
       input[type=number] { -moz-appearance: textfield; }
+      /* Avoid accidental selection while dragging the wheel */
+      .no-select, .no-select * { -webkit-user-select: none; user-select: none; }
     </style>
   </head>
   <body class="bg-slate-900">
     <div id="root"></div>
+    <div id="portal-root"></div>
+
     <script type="text/babel" data-presets="react,env">
-      const { useEffect, useMemo, useRef, useState } = React;
-      const APP_VERSION = "v25";
+      const { useEffect, useMemo, useRef, useState, memo } = React;
+      const APP_VERSION = "v50 (header tweak)";
       const MAX_MEMBERS = 3;
       const uid = () => Math.random().toString(36).slice(2, 10);
       const STORAGE_KEY = "pig-grid-v19";
-      const sum = (arr) => arr.reduce((a, b) => a + b, 0);
+      const sum = (arr) => arr.reduce((a,b)=>a+b, 0);
       const clampInt = (n) => { const x = Math.floor(Number(n)); return Number.isFinite(x) ? x : 0; };
-
-      // Force dark theme only
-      const useTheme = () => {
-        useEffect(() => { document.body.className = "bg-slate-900"; }, []);
-        return ["dark", () => {}];
+      const hexToRgb = (hex)=>{
+        try {
+          let h=hex.replace("#","");
+          if(h.length===3) h=h.split("").map(c=>c+c).join("");
+          return {r:parseInt(h.slice(0,2),16), g:parseInt(h.slice(2,4),16), b:parseInt(h.slice(4,6),16)};
+        } catch(e){ return {r:255,g:255,b:255}; }
+      };
+      const alpha = (hex, a=0.18) => {
+        const {r,g,b} = hexToRgb(hex);
+        return `rgba(${r},${g},${b},${a})`;
       };
 
-      const useIsMobile = () => {
-        const get = () => (typeof window !== "undefined" ? window.innerWidth < 768 : false);
-        const [isMobile, setIsMobile] = useState(get());
-        useEffect(() => { const onResize = () => setIsMobile(get()); window.addEventListener("resize", onResize); return () => window.removeEventListener("resize", onResize); }, []);
-        return isMobile;
-      };
+      // Imperative preview: update CSS variables on the team card without touching React state
+      function setTeamCssVars(teamId, hex){
+        const el = document.getElementById(`team-${teamId}`);
+        if (!el) return;
+        el.style.setProperty('--team-color', hex);
+        el.style.setProperty('--team-alpha', alpha(hex, 0.18));
+      }
 
+      // Persistence
       let saveTimer = null;
-      function usePersistedState(initial) {
-        const [state, setState] = useState(() => {
+      function usePersistedState(initial){
+        const [state, setState] = useState(()=>{
           try {
-            if (location.hash && location.hash.startsWith("#s=")) {
-              const b64 = location.hash.slice(3);
-              const json = decodeURIComponent(atob(b64));
-              const loaded = JSON.parse(json);
-              history.replaceState(null, "", location.pathname);
-              return { ...initial, ...loaded, history: [] };
-            }
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) return { ...initial, ...JSON.parse(raw), history: [] };
           } catch {}
           return initial;
         });
-        useEffect(() => {
+        useEffect(()=>{
           const { history, ...persistable } = state;
-          try { if (saveTimer) clearTimeout(saveTimer); } catch {}
-          saveTimer = setTimeout(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable)); } catch {} }, 200);
-          return () => { try { if (saveTimer) clearTimeout(saveTimer); } catch {} };
+          if (saveTimer) clearTimeout(saveTimer);
+          saveTimer = setTimeout(()=>{
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable)); } catch {}
+          }, 120);
+          return () => { if (saveTimer) clearTimeout(saveTimer); };
         }, [state]);
         return [state, setState];
       }
 
-      function useKeepFocus(id, focusedId) {
-        const ref = useRef(null);
-        useEffect(() => {
-          if (focusedId === id && ref.current) {
-            const el = ref.current;
-            el.focus();
+      function useKeepFocus(id, focusedId, selectAll=false, clearSelectAll){
+        const ref=useRef(null);
+        useEffect(()=>{
+          if (focusedId === id && ref.current){
+            const el = ref.current; el.focus();
             try {
-              const len = (el.value ?? "").length;
-              el.setSelectionRange(len, len);
+              if (selectAll && typeof el.select === "function") el.select();
+              else {
+                const len = (el.value ?? "").length;
+                if (typeof el.setSelectionRange === "function") el.setSelectionRange(len, len);
+              }
             } catch {}
+            if (selectAll && typeof clearSelectAll === "function"){
+              setTimeout(()=>clearSelectAll(), 0);
+            }
           }
-        });
+        }, [focusedId, id, selectAll, clearSelectAll]);
         return ref;
       }
 
-      const TEAM_ACCENTS = [
-        { ring: "ring-rose-400", chip: "bg-rose-500/20 text-rose-200", label: "from-rose-400 to-pink-400" },
-        { ring: "ring-sky-400",  chip: "bg-sky-500/20 text-sky-200",   label: "from-sky-400 to-cyan-400"  },
-        { ring: "ring-amber-400", chip:"bg-amber-500/20 text-amber-200", label:"from-amber-400 to-yellow-400" },
-        { ring: "ring-violet-400", chip:"bg-violet-500/20 text-violet-200", label:"from-violet-400 to-fuchsia-400" },
-        { ring: "ring-emerald-400", chip:"bg-emerald-500/20 text-emerald-200", label:"from-emerald-400 to-teal-400" },
-      ];
+      // Portal helper
+      function Portal({ children }){
+        const elRef = useRef(null);
+        if (!elRef.current) elRef.current = document.createElement("div");
+        useEffect(()=>{
+          const root = document.getElementById("portal-root");
+          root.appendChild(elRef.current);
+          return () => { root.removeChild(elRef.current); };
+        }, []);
+        return ReactDOM.createPortal(children, elRef.current);
+      }
 
-      function App() {
-        const isMobile = useIsMobile();
-        const [theme] = useTheme(); // always 'dark'
+      // IRO wheel picker rendered in a portal; live preview uses CSS vars (no React setState during drag)
+      const WheelPicker = memo(function WheelPicker({ teamId, color, onCommit, onClose }){
+        const hostRef = useRef(null);
+        const pickerRef = useRef(null);
+        const [fallback, setFallback] = useState(false);
+        const [hex, setHex] = useState(color);
+
+        useEffect(()=>{
+          // Initialize CSS vars to current color
+          setTeamCssVars(teamId, color);
+        }, [teamId, color]);
+
+        useEffect(()=>{
+          let disposed = false;
+          function mountIro(){
+            if (!window.iro || !hostRef.current) return false;
+            try {
+              const iro = window.iro;
+              const picker = new iro.ColorPicker(hostRef.current, {
+                width: 260,
+                color: color,
+                layout: [
+                  { component: iro.ui.Wheel, options: { wheelLightness: true } },
+                  { component: iro.ui.Slider, options: { sliderType: "saturation" } },
+                  { component: iro.ui.Slider, options: { sliderType: "value" } },
+                ],
+              });
+              // Live preview without React re-render
+              const onAnyChange = (c)=>{
+                if (disposed) return;
+                const h = c.hexString;
+                setHex(h);
+                setTeamCssVars(teamId, h);
+              };
+              picker.on("input:change", onAnyChange);
+              picker.on("color:change", onAnyChange);
+              pickerRef.current = picker;
+              return true;
+            } catch (e) {
+              return false;
+            }
+          }
+          const ok = mountIro();
+          if (!ok) setFallback(true);
+          return () => {
+            disposed = true;
+            try { pickerRef.current?.off("input:change"); pickerRef.current?.off("color:change"); pickerRef.current?.destroy(); } catch {}
+            pickerRef.current = null;
+          };
+        }, []);
+
+        // If parent updates color while open, sync the wheel
+        useEffect(()=>{
+          try { if (pickerRef.current) pickerRef.current.color.hexString = color; } catch {}
+        }, [color]);
+
+        const commitAndClose = () => { onCommit(hex); onClose(); };
+
+        return (
+          <Portal>
+            <div className="fixed inset-0 z-50 no-select">
+              <div className="absolute inset-0 bg-black/30" onClick={commitAndClose}></div>
+              <div className="relative w-full h-full flex items-start justify-center pt-16">
+                <div className="relative p-4 rounded-2xl border border-slate-700 bg-slate-800 shadow-xl w-[360px]">
+                  <div className="text-xs text-slate-300 mb-3 flex items-center justify-between">
+                    <span>Pick a color</span>
+                    <button onClick={commitAndClose} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700">Close</button>
+                  </div>
+                  {!fallback ? (
+                    <div ref={hostRef} className="mx-auto"></div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="text-xs bg-slate-700/50 p-2 rounded">CDN blocked or offline — using native picker.</div>
+                      <input type="color" value={hex} onInput={(e)=>{ const h=e.target.value; setHex(h); setTeamCssVars(teamId, h); }} className="w-full h-10 rounded border border-slate-600 bg-slate-800" />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </Portal>
+        );
+      });
+
+      function App(){
         const [app, setApp] = usePersistedState({
-          mode: "teams",
           target: 100,
           teams: [
-            { id: uid(), name: "Team A", members: [{ id: uid(), name: "Member 1", entries: [] }, { id: uid(), name: "Member 2", entries: [] }, { id: uid(), name: "Member 3", entries: [] }] },
-            { id: uid(), name: "Team B", members: [{ id: uid(), name: "Member 1", entries: [] }, { id: uid(), name: "Member 2", entries: [] }, { id: uid(), name: "Member 3", entries: [] }] },
-          ],
-          players: [
-            { id: uid(), name: "Player 1", entries: [] },
-            { id: uid(), name: "Player 2", entries: [] },
+            { id: uid(), name: "Team A", color: "#38bdf8", members: [
+              { id: uid(), name: "Member 1", entries: [] },
+              { id: uid(), name: "Member 2", entries: [] },
+              { id: uid(), name: "Member 3", entries: [] },
+            ]},
+            { id: uid(), name: "Team B", color: "#f472b6", members: [
+              { id: uid(), name: "Member 1", entries: [] },
+              { id: uid(), name: "Member 2", entries: [] },
+              { id: uid(), name: "Member 3", entries: [] },
+            ]},
           ],
           history: [],
           pending: {},
         });
         const [focusedId, setFocusedId] = useState(null);
+        const [pickerForTeam, setPickerForTeam] = useState(null);
 
-        const makeSnapshot = (prev) => ({ mode: prev.mode, target: prev.target, teams: prev.teams, players: prev.players, pending: prev.pending });
-        const pushHistory = (label) => setApp(prev => ({ ...prev, history: [...prev.history.slice(-9), { label, snapshot: makeSnapshot(prev), ts: Date.now() }] }));
-        const onUndo = () => { if (app.history.length === 0) return; const last = app.history[app.history.length - 1]; setApp(prev => ({ ...prev, ...last.snapshot, history: prev.history.slice(0, -1) })); };
-
+        const snapshot = (p) => ({ target: p.target, teams: p.teams, pending: p.pending });
+        const pushHistory = (label) => setApp(p => ({ ...p, history: [...p.history.slice(-9), { label, snapshot: snapshot(p), ts: Date.now() }] }));
+        const onUndo = () => { if (!app.history.length) return; const last = app.history.at(-1); setApp(p => ({ ...p, ...last.snapshot, history: p.history.slice(0, -1) })); };
         const hardReset = () => {
-          if (!confirm("Reset scores and start a new game? This does not archive.")) return;
-          setApp(prev => ({
-            ...prev,
-            teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })),
-            players: prev.players.map(p => ({ ...p, entries: [] })),
-            pending: {},
-            history: []
+          if (!confirm("Reset scores (no archive)?")) return;
+          setApp(p => ({ ...p, teams: p.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })), pending: {}, history: [] }));
+        };
+
+        const addMember = (teamId) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.length>=MAX_MEMBERS ? t.members : [...t.members, { id: uid(), name: `Member ${t.members.length+1}`, entries: [] }] } : t) }));
+        const removeMember = (teamId, memberId) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.filter(m => m.id !== memberId) } : t) }));
+        const renameMember = (teamId, memberId, name) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, name } : m) } : t) }));
+        const renameTeam = (teamId, name) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, name } : t) }));
+        const setTeamColor = (teamId, color) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, color } : t) }));
+
+        const setPending = (id, value) => setApp(p => ({ ...p, pending: { ...p.pending, [id]: value } }));
+        const commitPending = (teamId, memberId) => {
+          const raw = app.pending[memberId];
+          if (raw == null || String(raw).trim() === "") return;
+          const n = clampInt(raw);
+          if (n < 0) { setPending(memberId, ""); return; }
+          pushHistory("+" + n);
+          setApp(p => ({ ...p,
+            teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, entries: [...m.entries, n] } : m) } : t),
+            pending: { ...p.pending, [memberId]: "" }
           }));
         };
 
-        const addTeam = () => setApp(prev => ({ ...prev, teams: [...prev.teams, { id: uid(), name: `Team ${String.fromCharCode(65 + prev.teams.length)}`, members: [] }] }));
-        const removeTeam = (teamId) => setApp(prev => ({ ...prev, teams: prev.teams.filter(t => t.id !== teamId) }));
-        const renameTeam = (teamId, name) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, name } : t) }));
-        const addMember = (teamId) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, members: t.members.length >= MAX_MEMBERS ? t.members : [...t.members, { id: uid(), name: `Member ${t.members.length + 1}`, entries: [] }] } : t) }));
-        const removeMember = (teamId, memberId) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, members: t.members.filter(m => m.id !== memberId) } : t) }));
-        const renameMember = (teamId, memberId, name) => setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === teamId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, name } : m) } : t) }));
-        const addPlayer = () => setApp(prev => ({ ...prev, players: [...prev.players, { id: uid(), name: `Player ${prev.players.length + 1}`, entries: [] }] }));
-        const removePlayer = (id) => setApp(prev => ({ ...prev, players: prev.players.filter(p => p.id !== id) }));
-        const renamePlayer = (id, name) => setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === id ? { ...p, name } : p) }));
-
-        const setPending = (id, value) => setApp(prev => ({ ...prev, pending: { ...prev.pending, [id]: value } }));
-        const commitPending = (contextId, id, isTeams) => {
-          const raw = app.pending[id];
-          if (raw == null || String(raw).trim() === "") return;
-          const n = clampInt(raw);
-          if (n < 0) { setPending(id, ""); return; }
-          pushHistory("+" + n);
-          if (isTeams) setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === contextId ? { ...t, members: t.members.map(m => m.id === id ? { ...m, entries: [...m.entries, n] } : m) } : t), pending: { ...prev.pending, [id]: "" } }));
-          else setApp(prev => ({ ...prev, players: prev.players.map(p => p.id === id ? { ...p, entries: [...p.entries, n] } : p), pending: { ...prev.pending, [id]: "" } }));
-        };
-
-        const scoreOrderTeams = useMemo(() => {
-          if (app.mode !== "teams") return [];
+        // Tab ordering
+        const scoreOrder = useMemo(()=>{
           const teams = app.teams;
           const maxRows = Math.max(0, ...teams.map(t => t.members.length));
           const order = [];
-          for (let row = 0; row < maxRows; row++) {
-            for (let col = 0; col < teams.length; col++) {
-              const m = teams[col].members[row];
-              if (m) order.push({ memberId: m.id, teamId: teams[col].id });
-            }
-          }
+          for (let r=0; r<maxRows; r++) for (const t of teams){ const m=t.members[r]; if(m) order.push({memberId:m.id, teamId:t.id}); }
           return order;
-        }, [app.mode, app.teams]);
-        const memberToTeam = useMemo(() => { const map = new Map(); scoreOrderTeams.forEach(o => map.set(o.memberId, o.teamId)); return map; }, [scoreOrderTeams]);
-        const scoreIndexTeams = useMemo(() => { const m = new Map(); scoreOrderTeams.forEach((o,i)=>m.set(o.memberId,i)); return m; }, [scoreOrderTeams]);
+        }, [app.teams]);
+        const scoreIndex = useMemo(()=>{ const m=new Map(); scoreOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; }, [scoreOrder]);
+        const memberToTeam = useMemo(()=>{ const m=new Map(); scoreOrder.forEach(o=>m.set(o.memberId,o.teamId)); return m; }, [scoreOrder]);
+        const nameOrder = useMemo(()=>{ const order=[]; for(const t of app.teams) for(const m of t.members) order.push({memberId:m.id, teamId:t.id}); return order; }, [app.teams]);
+        const nameIndex = useMemo(()=>{ const m=new Map(); nameOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; }, [nameOrder]);
 
-        const scoreOrderSolo = useMemo(() => app.mode !== "solo" ? [] : app.players.map(p => ({ playerId: p.id })), [app.mode, app.players]);
-        const scoreIndexSolo = useMemo(() => { const m = new Map(); scoreOrderSolo.forEach((o,i)=>m.set(o.playerId,i)); return m; }, [scoreOrderSolo]);
+        const Header = () => (
+          <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
+            <div className="justify-self-start">
+              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pig Scorekeeper</h1>
+            </div>
+            <div className="justify-self-center">
+              <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 text-sm md:text-base whitespace-nowrap">
+                <span className="font-semibold">Goal:</span> First to 100 points wins!
+              </div>
+            </div>
+            <div className="justify-self-end flex items-center gap-2">
+              <button onClick={onUndo} disabled={!app.history.length} className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 disabled:opacity-50">Undo</button>
+              <button onClick={hardReset} className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100">Reset</button>
+            </div>
+          </header>
+        );
 
-        const Header = () => {
-          const menuRef = useRef(null);
-          const [open, setOpen] = useState(false);
-          useEffect(() => {
-            const onDocClick = (e) => { if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false); };
-            const onEsc = (e) => { if (e.key === "Escape") setOpen(false); };
-            document.addEventListener("mousedown", onDocClick);
-            document.addEventListener("keydown", onEsc);
-            return () => { document.removeEventListener("mousedown", onDocClick); document.removeEventListener("keydown", onEsc); };
-          }, []);
-          const Btn = (props) => <button className={"px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 whitespace-nowrap"} {...props}/>;
-          return (
-            <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
-              <div className="justify-self-start">
-                <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pig Scorekeeper</h1>
-              </div>
-              <div className="justify-self-center">
-                <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 text-sm md:text-base whitespace-nowrap">
-                  <span className="font-semibold">Goal:</span> First to 100 points
-                </div>
-              </div>
-              <div className="justify-self-end flex items-center gap-2" ref={menuRef}>
-                <Btn onClick={onUndo} disabled={app.history.length === 0} className={"disabled:opacity-50"}>Undo</Btn>
-                <Btn onClick={hardReset} title="Reset scores (no archive)">Reset</Btn>
-                <div className="relative">
-                  <Btn onClick={() => setOpen(o=>!o)} aria-expanded={open} aria-haspopup="menu">More ▾</Btn>
-                  {open && (
-                    <div className="absolute right-0 mt-2 z-20">
-                      <div className="rounded-2xl shadow border border-slate-700 bg-slate-800 p-2 w-56">
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-game-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }}>Export JSON</button>
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); let rows=[["mode","team","member","player","turn","score"]]; if (app.mode==="teams") app.teams.forEach(t=>t.members.forEach(m=>m.entries.forEach((v,i)=>rows.push(["teams",t.name,m.name,"",i+1,v])))); else app.players.forEach(p=>p.entries.forEach((v,i)=>rows.push(["solo","","",p.name,i+1,v]))); const csv=rows.map(r=>r.map(x=>`"${String(x).replace(/"/g,'""')}"`).join(",")).join("\n"); const blob= new Blob([csv], {type:'text/csv'}); const url = URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`pig-log-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000); }}>Export CSV</button>
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const inp=document.createElement('input'); inp.type='file'; inp.accept='application/json'; inp.onchange=(e)=>{ const file=e.target.files[0]; if(!file) return; const fr=new FileReader(); fr.onload=()=>{ try{ const data=JSON.parse(fr.result); setApp(prev=>({ ...prev, ...data, history: [] })); } catch{ alert('Invalid JSON'); } }; fr.readAsText(file); }; inp.click(); }}>Import JSON</button>
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => { setOpen(false); const { history, ...data } = app; const b64=btoa(encodeURIComponent(JSON.stringify(data))); navigator.clipboard?.writeText(location.origin + location.pathname + "#s=" + b64); alert("Shareable URL copied to clipboard!"); }}>Copy URL</button>
-                        <div className="h-px bg-slate-700 my-1"></div>
-                        <button className="w-full px-3 py-2 rounded-2xl hover:bg-slate-700 text-left whitespace-nowrap" onClick={() => {
-                          setOpen(false);
-                          const { history, ...data } = app;
-                          const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
-                          const url = URL.createObjectURL(blob);
-                          const a=document.createElement('a'); a.href=url; a.download=`pig-archive-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.json`; a.click();
-                          setTimeout(()=>URL.revokeObjectURL(url),1000);
-                          setApp(prev => ({
-                            ...prev,
-                            teams: prev.teams.map(t => ({ ...t, members: t.members.map(m => ({ ...m, entries: [] })) })),
-                            players: prev.players.map(p => ({ ...p, entries: [] })),
-                            pending: {}
-                          }));
-                        }}>Archive + New Game</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </header>
-          );
-        };
-
-        const TeamGrid = ({ team, teamIndex }) => {
-          const accent = TEAM_ACCENTS[teamIndex % TEAM_ACCENTS.length];
+        const TeamCard = ({ team }) => {
           const members = team.members;
-          const cols = Math.max(1, members.length); // single row with 2-3 columns
+          const cols = Math.max(1, members.length);
           const teamNameRef = useKeepFocus(team.id, focusedId);
           const condensed = members.length >= 3;
+
+          // Ensure CSS vars reflect state color on mount/update
+          useEffect(()=>{ setTeamCssVars(team.id, team.color); }, [team.id, team.color]);
+
           return (
-            <div className={`p-3 md:p-4 rounded-2xl shadow border border-slate-700 bg-slate-800 ring-1 ${accent.ring}`}>
+            <div id={`team-${team.id}`} className="p-3 md:p-4 rounded-2xl shadow border border-slate-700 bg-slate-800"
+                 style={{ boxShadow: '0 0 0 1px var(--team-color)' }}>
               <div className="mb-2 md:mb-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2 relative">
                   <div className="flex-1" />
-                  <div className="flex flex-col items-center gap-1">
-                    <input tabIndex={-1} ref={teamNameRef} value={team.name} onChange={(e)=>{ setFocusedId(team.id); renameTeam(team.id, e.target.value); }} className={`text-2xl md:text-3xl font-black tracking-wide px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100`} style={{ width: "18rem" }} />
-                    <div className={`text-xs font-medium bg-clip-text text-transparent bg-gradient-to-r ${accent.label}`}>Team</div>
+                  <div className="flex items-center gap-3 relative">
+                    <button onClick={()=>setPickerForTeam(team.id)} className="w-7 h-7 md:w-8 md:h-8 rounded-full border border-slate-700 shrink-0"
+                            style={{ background: 'var(--team-color)' }} title="Pick team color"></button>
+                    <div className="flex flex-col items-center gap-1">
+                      <input tabIndex={-1} ref={teamNameRef} value={team.name}
+                        onChange={(e)=>{ setFocusedId(team.id); renameTeam(team.id, e.target.value); }}
+                        className="text-xl md:text-3xl font-black tracking-wide px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100"
+                        style={{ width: "16rem" }}
+                      />
+                      <div className="text-xs font-medium" style={{ color: 'var(--team-color)' }}>Team</div>
+                    </div>
                   </div>
                   <div className="flex items-center gap-2 text-sm">
                     <button onClick={()=>addMember(team.id)} disabled={members.length>=MAX_MEMBERS} className="px-3 md:px-4 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-10 md:h-10 text-sm md:text-base disabled:opacity-50 whitespace-nowrap">Add member</button>
                     <span className="text-xs uppercase tracking-wide opacity-70">{members.length}/{MAX_MEMBERS}</span>
-                    <button onClick={()=>removeTeam(team.id)} className="px-3 md:px-4 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 hover:bg-slate-700 h-10 md:h-10 text-sm md:text-base whitespace-nowrap">Remove team</button>
                   </div>
                 </div>
               </div>
 
-              <div className="p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center">
-                <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70">Team total</div>
-                <div className={`${condensed?'text-4xl md:text-5xl':'text-5xl md:text-6xl'} font-black text-rose-400 tabular-nums`}>{sum(members.map(m => sum(m.entries)))}</div>
-                <div className={`inline-block px-2 py-0.5 rounded-lg text-[10px] md:text-xs ${accent.chip} mt-1`}>{Math.max(0, 100 - sum(members.map(m => sum(m.entries))))} to 100</div>
+              <div className="p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center" style={{ boxShadow: '0 0 0 1px var(--team-color)' }}>
+                <div className="text-xs md:text-sm uppercase tracking-wide opacity-70">Team total</div>
+                {/* Total in white as requested */}
+                <div className={`${condensed?'text-6xl md:text-7xl':'text-7xl md:text-8xl'} font-black tabular-nums`} style={{ color: '#fff' }}>
+                  {sum(members.map(m => sum(m.entries)))}
+                </div>
+                {/* Colored badge uses CSS var for live preview */}
+                <div className="inline-block px-2 py-1 rounded-lg text-sm md:text-base mt-1"
+                     style={{ background: 'var(--team-alpha)', color: 'var(--team-color)' }}>
+                  {Math.max(0, 100 - sum(members.map(m => sum(m.entries))))} to 100
+                </div>
               </div>
 
-              {/* Member totals row */}
               <div className="mt-3 grid gap-2 md:gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {members.map(m => {
-                  const nameRef = useKeepFocus(m.id + ":name", focusedId);
+                  const nameRef = useKeepFocus(m.id + ":name", focusedId, false, ()=>{});
                   return (
-                    <div key={m.id} className={`relative p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center ring-1 ${accent.ring}`}>
-                      {/* Small pinned X */}
+                    <div key={m.id} className="relative p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center"
+                         style={{ boxShadow: '0 0 0 1px var(--team-color)' }}>
                       <button onClick={()=>removeMember(team.id,m.id)} className="absolute top-1 right-1 md:top-2 md:right-2 rounded-md border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-[10px] md:text-xs px-1.5 py-0.5" title="Remove member">×</button>
                       <div className="flex items-center justify-center gap-2 mb-1 md:mb-2">
-                        <input tabIndex={-1} ref={nameRef} value={m.name} onChange={(e)=>{ setFocusedId(m.id + ":name"); renameMember(team.id, m.id, e.target.value); }} className={`font-bold ${condensed?'text-sm md:text-lg':'text-lg md:text-xl'} px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100`} style={{ width: condensed ? "8rem" : "12rem" }} />
+                        <input
+                          tabIndex={0}
+                          ref={nameRef}
+                          value={m.name}
+                          onFocus={()=> setFocusedId(m.id + ":name")}
+                          onChange={(e)=>{ setFocusedId(m.id + ":name"); renameMember(team.id, m.id, e.target.value); }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Tab") {
+                              e.preventDefault();
+                              const idx = nameIndex.get(m.id) ?? -1;
+                              const nextIdx = (idx + (e.shiftKey ? -1 : 1) + nameOrder.length) % nameOrder.length;
+                              const nextId = nameOrder[nextIdx]?.memberId;
+                              if (nextId) { setFocusedId(nextId + ":name"); }
+                            }
+                          }}
+                          className={`font-bold ${condensed?'text-base md:text-xl':'text-xl md:text-2xl'} px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100`}
+                          style={{ width: condensed ? "8rem" : "12rem" }}
+                        />
                       </div>
                       <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70">Subtotal</div>
-                      <div className={`${condensed?'text-2xl md:text-3xl':'text-3xl md:text-4xl'} font-bold tabular-nums`}>{sum(m.entries)}</div>
+                      <div className={`${condensed?'text-3xl md:text-4xl':'text-4xl md:text-5xl'} font-bold tabular-nums`}>{sum(m.entries)}</div>
                     </div>
                   );
                 })}
               </div>
 
-              {/* Per-turn row */}
               <div className="mt-3 grid gap-2 md:gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {members.map(m => {
                   const scoreRef = useKeepFocus(m.id + ":score", focusedId);
@@ -284,14 +367,21 @@
                           onFocus={() => setFocusedId(m.id + ":score")}
                           onChange={(e) => { setPending(m.id, e.target.value); }}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") { commitPending(memberToTeam.get(m.id), m.id, true); setFocusedId(m.id + ":score"); }
-                            else if (e.key === "Tab") { e.preventDefault(); commitPending(memberToTeam.get(m.id), m.id, true); const order = scoreOrderTeams; const idx = scoreIndexTeams.get(m.id) ?? -1; const nextIdx = (idx + (e.shiftKey ? -1 : 1) + order.length) % order.length; setFocusedId(order[nextIdx].memberId + ":score"); }
+                            if (e.key === "Enter") { commitPending(memberToTeam.get(m.id), m.id); setFocusedId(m.id + ":score"); }
+                            else if (e.key === "Tab") {
+                              e.preventDefault();
+                              commitPending(memberToTeam.get(m.id), m.id);
+                              const idx = scoreIndex.get(m.id) ?? -1;
+                              const nextIdx = (idx + (e.shiftKey ? -1 : 1) + scoreOrder.length) % scoreOrder.length;
+                              setFocusedId(scoreOrder[nextIdx].memberId + ":score");
+                            }
                           }}
                           className={`${(members.length>=3)?'basis-1/2 grow-0 w-1/2':'flex-1'} min-w-0 px-2 md:px-3 py-2 md:py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600 ${(members.length>=3)?'h-10 text-sm md:text-sm':'h-12 md:h-10 text-lg md:text-base'}`}
                           placeholder="score"
                         />
-                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, teams: prev.teams.map(t => t.id === memberToTeam.get(m.id) ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) })); }}
-                          className="w-10 h-10 md:w-10 md:h-10 grid place-items-center rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-base"
+                        <button
+                          onClick={() => { pushHistory("undo member last"); setApp(p => ({ ...p, teams: p.teams.map(t => t.id === memberToTeam.get(m.id) ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) })); }}
+                          className="w-10 h-10 grid place-items-center rounded-2xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-base"
                           title="Undo last" aria-label="Undo last">↶</button>
                       </div>
                     </div>
@@ -302,162 +392,24 @@
           );
         };
 
-        const SoloGrid = () => {
-          const colsStyle = { gridTemplateColumns: `repeat(auto-fit, minmax(240px, 1fr))` };
-          const many = app.players.length >= 3;
-          return (
-            <div className="p-4 rounded-2xl shadow border border-slate-700 bg-slate-800">
-              <div className="grid gap-2" style={colsStyle}>
-                {app.players.map((p,i) => {
-                  const nameRef = useKeepFocus(p.id + ":name", focusedId);
-                  const accent = TEAM_ACCENTS[i % TEAM_ACCENTS.length];
-                  return (
-                    <div key={p.id} className={`p-2 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center ring-1 ${accent.ring}`}>
-                      <div className="flex items-center gap-2 justify-center mb-2">
-                        <input tabIndex={-1} ref={nameRef} value={p.name} onChange={(e) => { setFocusedId(p.id + ":name"); renamePlayer(p.id, e.target.value); }} className={`font-bold ${many?'text-base md:text-lg':'text-lg md:text-xl'} px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100`} style={{ width: many ? "10rem" : "12rem" }} />
-                        <button onClick={() => removePlayer(p.id)} className="px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm">✕</button>
-                      </div>
-                      <div className="text-xs uppercase tracking-wide opacity-60">Total</div>
-                      <div className={`${many?'text-4xl md:text-5xl':'text-5xl md:text-6xl'} font-black text-rose-400 tabular-nums`}>{sum(p.entries)}</div>
-                      <div className="inline-block px-2 py-0.5 rounded-lg text-xs mt-1">{Math.max(0, 100 - sum(p.entries))} to 100</div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="mt-3 grid gap-2" style={colsStyle}>
-                {app.players.map((p) => {
-                  const scoreRef = useKeepFocus(p.id + ":score", focusedId);
-                  return (
-                    <div key={p.id} className="p-2 rounded-2xl shadow border border-slate-700 bg-slate-800">
-                      <div className="text-xs uppercase tracking-wide opacity-70 mb-1 text-center">Per-turn</div>
-                      <ul className="min-h-[2rem] space-y-1 max-h-40 overflow-auto pr-1">
-                        {p.entries.map((v, j) => (<li key={j} className="text-sm tabular-nums">{v}</li>))}
-                      </ul>
-                      <div className="mt-2 flex items-center gap-2">
-                        <input
-                          ref={scoreRef}
-                          type="number"
-                          inputMode="numeric"
-                          value={app.pending[p.id] ?? ""}
-                          onFocus={() => setFocusedId(p.id + ":score")}
-                          onChange={(e) => { setPending(p.id, e.target.value); }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") { commitPending("_solo", p.id, false); setFocusedId(p.id + ":score"); }
-                            else if (e.key === "Tab") { e.preventDefault(); commitPending("_solo", p.id, false); const order = scoreOrderSolo; const idx = scoreIndexSolo.get(p.id) ?? -1; const nextIdx = (idx + (e.shiftKey ? -1 : 1) + order.length) % order.length; setFocusedId(order[nextIdx].playerId + ":score"); }
-                          }}
-                          className={`flex-1 px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600 h-12 md:h-10 ${many?'text-base md:text-sm':'text-lg md:text-base'}`}
-                          placeholder="score"
-                        />
-                        <button onClick={() => { pushHistory("undo member last"); setApp(prev => ({ ...prev, players: prev.players.map(x => x.id === p.id ? { ...x, entries: x.entries.slice(0, -1) } : x) })); }} className="w-10 h-10 grid place-items-center rounded-xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-lg" title="Undo last" aria-label="Undo last">↶</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        };
-
-        const TeamsView = () => (
-          <div className="grid md:grid-cols-2 gap-6">
-            {app.teams.map((t, idx) => (<TeamGrid key={t.id} team={t} teamIndex={idx} />))}
-            <div className="flex items-center justify-center">
-              <button onClick={addTeam} className="px-4 py-3 md:py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-12 md:h-10 text-base whitespace-nowrap">Add team</button>
-            </div>
-          </div>
-        );
-
-        useEffect(() => { if ("serviceWorker" in navigator) { navigator.serviceWorker.register("./sw.js").catch(()=>{}); } }, []);
-
-        const BottomBar = () => (
-          <div className="fixed bottom-0 left-0 right-0 z-50 bg-slate-900/95 border-t border-slate-700 backdrop-blur py-3 px-3 md:hidden">
-            <div className="max-w-7xl mx-auto flex items-center gap-3">
-              <div className="flex-1 min-w-0">
-                <div className="text-xs opacity-70">Next up</div>
-                <div className="font-semibold truncate">
-                  {(() => {
-                    if (app.mode === "teams") {
-                      const order = scoreOrderTeams;
-                      if (!order.length) return "—";
-                      let curIdx = -1;
-                      if (focusedId && focusedId.endsWith(":score")) { const id = focusedId.slice(0, -6); curIdx = scoreIndexTeams.has(id) ? scoreIndexTeams.get(id) : -1; }
-                      const nextIdx = (curIdx + 1) % order.length;
-                      const { memberId, teamId } = order[nextIdx];
-                      let teamName = "Team", memberName = "Member";
-                      for (const t of app.teams) if (t.id === teamId) { teamName = t.name || teamName; const m = t.members.find(x => x.id === memberId);
-                      if (m) memberName = m.name || memberName; break; }
-                      return `${teamName} — ${memberName}`;
-                    } else {
-                      const order = scoreOrderSolo;
-                      if (!order.length) return "—";
-                      let curIdx = -1;
-                      if (focusedId && focusedId.endsWith(":score")) { const id = focusedId.slice(0, -6); curIdx = scoreIndexSolo.has(id) ? scoreIndexSolo.get(id) : -1; }
-                      const nextIdx = (curIdx + 1) % order.length;
-                      const { playerId } = order[nextIdx];
-                      const p = app.players.find(x => x.id === playerId);
-                      return p ? p.name : "Player";
-                    }
-                  })()}
-                </div>
-              </div>
-              <button onClick={() => onUndo()} disabled={app.history.length === 0} className="px-4 py-3 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 disabled:opacity-50 whitespace-nowrap">Undo</button>
-              <button onClick={() => {
-                if (app.mode === "teams") {
-                  let id = null;
-                  if (focusedId && focusedId.endsWith(":score")) id = focusedId.slice(0, -6);
-                  const firstId = scoreOrderTeams[0]?.memberId;
-                  id = id || firstId;
-                  if (!id) return;
-                  const teamId = memberToTeam.get(id);
-                  if (teamId) commitPending(teamId, id, true);
-                  const order = scoreOrderTeams;
-                  const idx = scoreIndexTeams.get(id) ?? -1;
-                  const nextIdx = (idx + 1) % order.length;
-                  setFocusedId(order[nextIdx].memberId + ":score");
-                } else {
-                  let id = null;
-                  if (focusedId && focusedId.endsWith(":score")) id = focusedId.slice(0, -6);
-                  const firstId = scoreOrderSolo[0]?.playerId;
-                  id = id || firstId;
-                  if (!id) return;
-                  commitPending("_solo", id, false);
-                  const order = scoreOrderSolo;
-                  const idx = scoreIndexSolo.get(id) ?? -1;
-                  const nextIdx = (idx + 1) % order.length;
-                  setFocusedId(order[nextIdx].playerId + ":score");
-                }
-              }} className="px-4 py-3 rounded-2xl bg-emerald-600 text-white w-40 whitespace-nowrap">Save & Next</button>
-            </div>
-          </div>
-        );
-
         return (
-          <div className="min-h-screen w-full text-slate-100 pb-24 p-3 md:p-6">
+          <div className="min-h-screen w-full text-slate-100 p-3 md:p-6">
             <div className="max-w-7xl mx-auto">
               <Header />
-              <div className="mb-4">
-                <div className="rounded-2xl border border-slate-700 bg-slate-800 inline-flex">
-                  <button onClick={() => setApp(prev => ({ ...prev, mode: 'teams' }))} className={`px-4 py-2 rounded-2xl ${app.mode === 'teams' ? 'bg-emerald-600 text-white' : ''}`}>Teams</button>
-                  <button onClick={() => setApp(prev => ({ ...prev, mode: 'solo' }))} className={`px-4 py-2 rounded-2xl ${app.mode === 'solo' ? 'bg-emerald-600 text-white' : ''}`}>Solo</button>
-                </div>
+              <div className="grid md:grid-cols-2 gap-6">
+                {app.teams.map(t => <TeamCard key={t.id} team={t} />)}
               </div>
-
-              {app.mode === "teams" ? <TeamsView /> : (
-                <div className="space-y-4">
-                  <SoloGrid />
-                  <div className="flex justify-center">
-                    <button onClick={addPlayer} className="px-4 py-3 rounded-2xl bg-emerald-600 text-white whitespace-nowrap">Add player</button>
-                  </div>
-                </div>
-              )}
             </div>
+            <div className="fixed right-3 bottom-3 z-40 text-xs text-slate-400 opacity-70 select-none">{APP_VERSION}</div>
 
-            {/* Version badge */}
-            <div className="fixed right-3 bottom-20 md:bottom-3 z-40 pointer-events-none text-[11px] md:text-xs text-slate-400 opacity-70 select-none">
-              {APP_VERSION}
-            </div>
-            <BottomBar />
+            {pickerForTeam && (
+              <WheelPicker
+                teamId={pickerForTeam}
+                color={app.teams.find(t=>t.id===pickerForTeam)?.color || "#38bdf8"}
+                onCommit={(hex)=> setTeamColor(pickerForTeam, hex)}
+                onClose={()=> setPickerForTeam(null)}
+              />
+            )}
           </div>
         );
       }
