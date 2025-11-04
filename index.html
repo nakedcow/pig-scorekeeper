@@ -1,283 +1,372 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-    <title>Pig Scorekeeper</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <style>
-      body { background: #0f172a; color: #e2e8f0; }
-      input[type=number]::-webkit-outer-spin-button,
-      input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-      input[type=number] { -moz-appearance: textfield; }
-      .no-select, .no-select * { -webkit-user-select: none; user-select: none; }
-    </style>
-  </head>
-  <body class="bg-slate-900">
-    <div id="root"></div>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
+  <title>Pig Scorekeeper</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- iro.js for color wheel -->
+  <script src="https://cdn.jsdelivr.net/npm/@jaames/iro@5"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { background:#0f172a; color:#e2e8f0; }
+    input[type=number]::-webkit-outer-spin-button,
+    input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+    input[type=number]{ -moz-appearance:textfield; }
+  </style>
+</head>
+<body class="bg-slate-900">
+  <div id="root"></div>
+  <div id="portal-root"></div>
 
-    <script type="text/babel" data-presets="react,env">
-      const { useEffect, useMemo, useRef, useState } = React;
-      const APP_VERSION = "V1.59 (desktop)";
-      const MAX_MEMBERS = 3;
-      const uid = () => Math.random().toString(36).slice(2, 10);
-      const STORAGE_KEY = "pig-grid-v19";
-      const sum = (arr) => arr.reduce((a,b)=>a+b, 0);
-      const clampInt = (n) => { const x = Math.floor(Number(n)); return Number.isFinite(x) ? x : 0; };
+<script type="text/babel" data-presets="react,env">
+const {useState,useEffect,useMemo,useRef,memo} = React;
+const APP_VERSION = "V1.62 (desktop)";
+const MAX_MEMBERS = 3;
+const uid = () => Math.random().toString(36).slice(2,10);
+const STORAGE_KEY = "pig-grid-v19";
+const sum = (a)=>a.reduce((x,y)=>x+y,0);
+const clampInt = (n)=>{ const x = Math.floor(Number(n)); return Number.isFinite(x)?x:0; };
 
-      let saveTimer = null;
-      function usePersistedState(initial){
-        const [state, setState] = useState(()=>{
-          try {
-            const raw = localStorage.getItem(STORAGE_KEY);
-            if (raw) {
-              const loaded = { ...initial, ...JSON.parse(raw), history: [] };
-              loaded.teams = loaded.teams.map(t => ({ ...t, teamEntries: Array.isArray(t.teamEntries) ? t.teamEntries : [] }));
-              return loaded;
-            }
-          } catch {}
-          return initial;
-        });
-        useEffect(()=>{
-          const { history, ...persistable } = state;
-          if (saveTimer) clearTimeout(saveTimer);
-          saveTimer = setTimeout(()=>{
-            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persistable)); } catch {}
-          }, 120);
-          return () => { if (saveTimer) clearTimeout(saveTimer); };
-        }, [state]);
-        return [state, setState];
+function usePersistedState(initial){
+  const [state,setState] = useState(()=>{
+    try{
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw){
+        const loaded = { ...initial, ...JSON.parse(raw) };
+        loaded.teams = loaded.teams.map(t=>({ ...t, teamEntries:Array.isArray(t.teamEntries)?t.teamEntries:[] }));
+        loaded.history = []; // don't hydrate past history
+        return loaded;
       }
+    }catch{}
+    return initial;
+  });
+  useEffect(()=>{
+    const {history,...persist} = state;
+    const id = setTimeout(()=>{ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(persist)); }catch{} }, 120);
+    return ()=> clearTimeout(id);
+  },[state]);
+  return [state,setState];
+}
 
-      function App(){
-        const [app, setApp] = usePersistedState({
-          target: 100,
-          teams: [
-            { id: uid(), name: "Team A", color: "#38bdf8", teamEntries: [], members: [
-              { id: uid(), name: "Member 1", entries: [] },
-              { id: uid(), name: "Member 2", entries: [] },
-              { id: uid(), name: "Member 3", entries: [] },
-            ]},
-            { id: uid(), name: "Team B", color: "#f472b6", teamEntries: [], members: [
-              { id: uid(), name: "Member 1", entries: [] },
-              { id: uid(), name: "Member 2", entries: [] },
-              { id: uid(), name: "Member 3", entries: [] },
-            ]},
-          ],
-          history: [],
-          pending: {},
-        });
+// ---------- Portal helper ----------
+function Portal({ children }){
+  const elRef = useRef(null);
+  if (!elRef.current) elRef.current = document.createElement("div");
+  useEffect(()=>{
+    const root = document.getElementById("portal-root");
+    root.appendChild(elRef.current);
+    return ()=> { root.removeChild(elRef.current); };
+  },[]);
+  return ReactDOM.createPortal(children, elRef.current);
+}
 
-        // --- helper actions
-        const addMember = (teamId) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.length>=MAX_MEMBERS ? t.members : [...t.members, { id: uid(), name: `Member ${t.members.length+1}`, entries: [] }] } : t) }));
-        const removeMember = (teamId, memberId) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.filter(m => m.id !== memberId) } : t) }));
-        const renameMember = (teamId, memberId, name) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, name } : m) } : t) }));
-        const renameTeam = (teamId, name) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, name } : t) }));
+// ---------- Color wheel overlay ----------
+const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
+  const hostRef = useRef(null);
+  const pickerRef = useRef(null);
+  const [fallback, setFallback] = useState(false);
 
-        const setPending = (id, value) => setApp(p => ({ ...p, pending: { ...p.pending, [id]: value } }));
-        const commitPending = (teamId, memberId) => {
-          const raw = app.pending[memberId];
-          if (!raw || String(raw).trim()==="") return;
-          const n = clampInt(raw);
-          if (n < 0) { setPending(memberId, ""); return; }
-          setApp(p => ({
-            ...p,
-            teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, entries: [...m.entries, n] } : m) } : t),
-            pending: { ...p.pending, [memberId]: "" }
-          }));
-        };
+  useEffect(()=>{
+    if (!window.iro || !hostRef.current) { setFallback(true); return; }
+    try {
+      const iro = window.iro;
+      const picker = new iro.ColorPicker(hostRef.current, {
+        width: 260,
+        color: initial,
+        layout: [
+          { component: iro.ui.Wheel, options: { wheelLightness: true } },
+          { component: iro.ui.Slider, options: { sliderType: "saturation" } },
+          { component: iro.ui.Slider, options: { sliderType: "value" } },
+        ],
+      });
+      const onAny = (c)=> onInput?.(c.hexString);
+      picker.on("input:change", onAny);
+      picker.on("color:change", onAny);
+      pickerRef.current = picker;
+    } catch(e){ setFallback(true); }
+    return ()=>{
+      try {
+        pickerRef.current?.off("input:change");
+        pickerRef.current?.off("color:change");
+        pickerRef.current?.destroy();
+      } catch {}
+      pickerRef.current = null;
+    };
+  },[]);
 
-        // --- ordering for tab cycles
-        const nameOrder = useMemo(()=>{
-          const order=[]; for(const t of app.teams) for(const m of t.members) order.push({memberId:m.id, teamId:t.id}); return order;
-        }, [app.teams]);
-        const nameIndex = useMemo(()=>{ const m=new Map(); nameOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; }, [nameOrder]);
-
-        const scoreOrder = useMemo(()=>{
-          const teams = app.teams; const maxRows = Math.max(0, ...teams.map(t => t.members.length)); const order = [];
-          for (let r=0; r<maxRows; r++) for (const t of teams){ const m=t.members[r]; if(m) order.push({memberId:m.id, teamId:t.id}); }
-          return order;
-        }, [app.teams]);
-        const scoreIndex = useMemo(()=>{ const m=new Map(); scoreOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; }, [scoreOrder]);
-        const memberToTeam = useMemo(()=>{ const m=new Map(); scoreOrder.forEach(o=>m.set(o.memberId,o.teamId)); return m; }, [scoreOrder]);
-
-        // --- robust focus retention
-        const [focusState, setFocusState] = useState(null); // { kind: 'name'|'score', id }
-        const [selection, setSelection] = useState({ start:null, end:null });
-        const nameRefs = useRef({});  const setNameRef = (id, el) => { nameRefs.current[id]=el; };
-        const scoreRefs = useRef({}); const setScoreRef = (id, el) => { scoreRefs.current[id]=el; };
-
-        // Re-focus & restore caret after re-render
-        useEffect(()=>{
-          if (!focusState) return;
-          const map = focusState.kind === 'name' ? nameRefs.current : scoreRefs.current;
-          const el = map[focusState.id];
-          if (el && document.activeElement !== el) {
-            el.focus({ preventScroll: true });
-            if (selection.start != null && selection.end != null) {
-              try { el.setSelectionRange(selection.start, selection.end); } catch {}
-            }
-          }
-        });
-
-        const Header = () => (
-          <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
-            <div className="justify-self-start">
-              <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pig Scorekeeper</h1>
+  return (
+    <Portal>
+      <div className="fixed inset-0 z-50">
+        <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+        <div className="relative w-full h-full flex items-start justify-center pt-16">
+          <div className="relative p-4 rounded-2xl border border-slate-700 bg-slate-800 shadow-xl w-[360px]">
+            <div className="text-xs text-slate-300 mb-3 flex items-center justify-between">
+              <span>Pick a color</span>
+              <button onClick={onClose} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700">Close</button>
             </div>
-            <div className="justify-self-center">
-              <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 text-sm md:text-base whitespace-nowrap">
-                <span className="font-semibold">Goal:</span> First to 100 points wins!
+            {!fallback ? (
+              <div ref={hostRef} className="mx-auto"></div>
+            ) : (
+              <div className="space-y-2">
+                <div className="text-xs bg-slate-700/50 p-2 rounded">CDN blocked — using native picker.</div>
+                <input type="color" defaultValue={initial} onInput={(e)=>onInput?.(e.target.value)} className="w-full h-10 rounded border border-slate-600 bg-slate-800"/>
               </div>
-            </div>
-            <div className="justify-self-end flex items-center gap-2">
-              <button onClick={() => setApp(p => ({ ...p, history: p.history.slice(0, -1), ...(p.history.at(-1)?.snapshot || {}) }))}
-                      disabled={!app.history.length}
-                      className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 disabled:opacity-50">Undo</button>
-              <button onClick={() => { if (confirm('Reset scores?')) { setApp(p => ({ ...p, teams: p.teams.map(t => ({...t, members: t.members.map(m => ({...m, entries: []})), teamEntries: [] })), pending: {}, history: [] })); } }}
-                      className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100">Reset</button>
-            </div>
-          </header>
-        );
-
-        const TeamCard = ({ team }) => {
-          const members = team.members;
-          const cols = Math.max(1, members.length);
-
-          return (
-            <div className="p-3 md:p-4 rounded-2xl shadow border border-slate-700 bg-slate-800" style={{ boxShadow: `0 0 0 1px ${team.color}` }}>
-              <div className="mb-2 md:mb-3">
-                <div className="flex items-center justify-between gap-2 relative">
-                  <div className="flex-1" />
-                  <div className="flex items-center gap-3 relative">
-                    <button className="w-7 h-7 md:w-8 md:h-8 rounded-full border border-slate-700 shrink-0" style={{ background: team.color }} title="Pick team color"></button>
-                    <div className="flex flex-col items-center gap-1">
-                      <input value={team.name} onChange={(e)=>renameTeam(team.id, e.target.value)}
-                        className="text-xl md:text-3xl font-black tracking-wide px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100 w-64 md:w-80"
-                      />
-                      <div className="text-xs font-medium" style={{ color: team.color }}>Team</div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 text-sm">
-                    <button onClick={()=>addMember(team.id)} disabled={members.length>=MAX_MEMBERS} className="px-3 md:px-4 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-10 md:h-10 text-sm md:text-base disabled:opacity-50 whitespace-nowrap">Add member</button>
-                    <span className="text-xs uppercase tracking-wide opacity-70">{members.length}/{MAX_MEMBERS}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center min-h-[200px]" style={{ boxShadow: `0 0 0 1px ${team.color}` }}>
-                <div className="text-xs md:text-sm uppercase tracking-wide opacity-70">Team total</div>
-                <div className="text-8xl font-black tabular-nums text-white leading-none">{sum(members.flatMap(m=>m.entries)) + sum(team.teamEntries||[])}</div>
-                <div className="inline-block px-2 py-1 rounded-lg text-sm md:text-base mt-2" style={{ background: 'rgba(255,255,255,0.08)', color: team.color }}>
-                  {Math.max(0, 100 - (sum(members.flatMap(m=>m.entries)) + sum(team.teamEntries||[])))} to 100
-                </div>
-              </div>
-
-              <div className="mt-3 grid gap-2 md:gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-                {members.map(m => {
-                  const nameTab = 100 + (nameIndex.get(m.id) ?? 0);
-                  return (
-                    <div key={m.id} className="relative p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center" style={{ boxShadow: `0 0 0 1px ${team.color}` }}>
-                      <button onClick={()=>removeMember(team.id,m.id)} className="absolute top-1 right-1 md:top-2 md:right-2 rounded-md border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-[10px] md:text-xs px-1.5 py-0.5" title="Remove member">×</button>
-                      <div className="flex items-center justify-center gap-2 mb-1 md:mb-2">
-                        <input
-                          ref={el => setNameRef(m.id, el)}
-                          tabIndex={nameTab}
-                          value={m.name}
-                          onFocus={(e)=>{ setFocusState({kind:'name', id:m.id}); e.target.select(); }}
-                          onSelect={(e)=>{ setSelection({ start:e.target.selectionStart, end:e.target.selectionEnd }); }}
-                          onKeyDown={(e)=>{
-                            if (e.key === "Tab") {
-                              e.preventDefault();
-                              const idx = nameIndex.get(m.id) ?? 0;
-                              const nextIdx = (idx + (e.shiftKey ? -1 : 1) + nameOrder.length) % nameOrder.length;
-                              const nextId = nameOrder[nextIdx].memberId;
-                              setFocusState({ kind:'name', id: nextId });
-                              // allow the effect to focus next
-                            }
-                          }}
-                          onChange={(e)=>{ setSelection({ start:e.target.selectionStart, end:e.target.selectionEnd }); renameMember(team.id, m.id, e.target.value); }}
-                          className="font-bold text-xl md:text-2xl px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100 w-3/4"
-                        />
-                      </div>
-                      <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70">Subtotal</div>
-                      <div className="text-4xl md:text-5xl font-bold tabular-nums">{sum(m.entries)}</div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="mt-3 grid gap-2 md:gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
-                {members.map(m => {
-                  const scoreTab = 200 + (scoreIndex.get(m.id) ?? 0);
-                  return (
-                    <div key={m.id} className="p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800">
-                      <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70 mb-1 text-center">Per-turn</div>
-                      <ul className="min-h-[1.25rem] md:min-h-[1.75rem] space-y-0.5 max-h-24 md:max-h-28 overflow-auto pr-1">
-                        {m.entries.map((v, i) => (<li key={i} className="text-[11px] md:text-sm tabular-nums">{v}</li>))}
-                      </ul>
-                      <div className="mt-2 flex items-center gap-2">
-                        <input
-                          ref={el => setScoreRef(m.id, el)}
-                          tabIndex={scoreTab}
-                          type="text" inputMode="numeric" pattern="[0-9]*"
-                          value={app.pending[m.id] ?? ""}
-                          onFocus={(e)=>{ setFocusState({kind:'score', id:m.id}); setSelection({ start:e.target.selectionStart ?? 0, end:e.target.selectionEnd ?? 0 }); }}
-                          onSelect={(e)=>{ setSelection({ start:e.target.selectionStart, end:e.target.selectionEnd }); }}
-                          onChange={(e)=>{
-                            const digits = (e.target.value || "").replace(/\D+/g, "");
-                            setSelection({ start:digits.length, end:digits.length });
-                            setPending(m.id, digits);
-                          }}
-                          onKeyDown={(e)=>{
-                            if (e.key === "Enter") {
-                              commitPending(memberToTeam.get(m.id), m.id);
-                            } else if (e.key === "Tab") {
-                              e.preventDefault();
-                              commitPending(memberToTeam.get(m.id), m.id);
-                              const idx = scoreIndex.get(m.id) ?? 0;
-                              const nextIdx = (idx + (e.shiftKey ? -1 : 1) + scoreOrder.length) % scoreOrder.length;
-                              const nextId = scoreOrder[nextIdx].memberId;
-                              setFocusState({ kind:'score', id: nextId });
-                            }
-                          }}
-                          onBlur={()=>{ /* don't auto-commit on blur to avoid focus-loop; user hits Enter/Tab */ }}
-                          className="flex-1 min-w-0 h-12 md:h-10 text-lg md:text-base px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600"
-                          placeholder="score"
-                        />
-                        <button
-                          onClick={() => {
-                            setApp(p => ({ ...p, teams: p.teams.map(t => t.id === team.id ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) }));
-                          }}
-                          className="w-10 h-10 grid place-items-center rounded-2xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-base"
-                          title="Undo last" aria-label="Undo last">↶</button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        };
-
-        return (
-          <div className="min-h-screen w-full text-slate-100">
-            <div className="max-w-7xl mx-auto p-3 md:p-6">
-              <Header />
-              <div className="grid md:grid-cols-2 gap-6">
-                {app.teams.map(t => <TeamCard key={t.id} team={t} />)}
-              </div>
-            </div>
-            <div className="fixed right-3 bottom-3 z-40 text-xs text-slate-400 opacity-70 select-none">{APP_VERSION}</div>
+            )}
           </div>
-        );
-      }
+        </div>
+      </div>
+    </Portal>
+  );
+});
 
-      const root = ReactDOM.createRoot(document.getElementById("root"));
-      root.render(<App />);
-    </script>
-  </body>
+function App(){
+  const [app,setApp] = usePersistedState({
+    target:100,
+    teams:[
+      { id:uid(), name:"Team A", color:"#38bdf8", teamEntries:[], members:[
+        {id:uid(), name:"Member 1", entries:[]},
+        {id:uid(), name:"Member 2", entries:[]},
+        {id:uid(), name:"Member 3", entries:[]},
+      ]},
+      { id:uid(), name:"Team B", color:"#f472b6", teamEntries:[], members:[
+        {id:uid(), name:"Member 1", entries:[]},
+        {id:uid(), name:"Member 2", entries:[]},
+        {id:uid(), name:"Member 3", entries:[]},
+      ]},
+    ],
+    history:[], // snapshots of {teams, target}
+  });
+
+  // ---------- History (global Undo) ----------
+  const snapshot = (p)=> JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
+  const pushHistory = ()=> setApp(p => ({ ...p, history: [...p.history.slice(-49), snapshot(p)] }));
+  const onUndo = ()=> setApp(p => {
+    if (!p.history.length) return p;
+    const last = p.history[p.history.length-1];
+    return { ...p, teams: last.teams, target: last.target, history: p.history.slice(0,-1) };
+  });
+  const onReset = ()=> {
+    if (!confirm("Reset scores (no archive)?")) return;
+    pushHistory();
+    setApp(p => ({ ...p, teams: p.teams.map(t => ({ ...t, teamEntries: [], members: t.members.map(m => ({ ...m, entries: [] })) })) }));
+  };
+
+  // ---------- Actions ----------
+  const addMember = (teamId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.length>=MAX_MEMBERS ? t.members : [...t.members,{id:uid(),name:`Member ${t.members.length+1}`,entries:[]}]} : t)})); };
+  const removeMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.filter(m=>m.id!==memberId)} : t)})); };
+  const renameTeam = (teamId, name)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, name} : t)})); // commit handled by TeamNameInput on blur/Enter
+  const commitMemberName = (memberId, name)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> ({...t, members:t.members.map(m=> m.id===memberId ? {...m, name} : m)}))})); };
+  const addScore = (teamId, memberId, n)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:[...m.entries, n]} : m)} : t)})); };
+  const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
+  const setTeamColor = (teamId, color)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, color} : t)}));
+
+  // ---------- Orders for Tab cycles ----------
+  const nameOrder = useMemo(()=>{ const order=[]; for(const t of app.teams) for(const m of t.members) order.push({memberId:m.id, teamId:t.id}); return order; },[app.teams]);
+  const nameIndex = useMemo(()=>{ const m=new Map(); nameOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; },[nameOrder]);
+  const scoreOrder = useMemo(()=>{
+    const teams=app.teams; const maxRows=Math.max(0,...teams.map(t=>t.members.length)); const order=[];
+    for(let r=0;r<maxRows;r++) for(const t of teams){ const m=t.members[r]; if(m) order.push({memberId:m.id, teamId:t.id}); }
+    return order;
+  },[app.teams]);
+  const scoreIndex = useMemo(()=>{ const m=new Map(); scoreOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; },[scoreOrder]);
+
+  // Focus refs
+  const nameRefs = useRef({}); const setNameRef = (id,el)=> (nameRefs.current[id]=el);
+  const scoreRefs = useRef({}); const setScoreRef = (id,el)=> (scoreRefs.current[id]=el);
+
+  // Color picker state
+  const [pickerTeamId, setPickerTeamId] = useState(null);
+  const pickerTeam = pickerTeamId ? app.teams.find(t => t.id === pickerTeamId) : null;
+
+  const Header = () => (
+    <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
+      <div className="justify-self-start"><h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pig Scorekeeper</h1></div>
+      <div className="justify-self-center">
+        <div className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 text-sm md:text-base whitespace-nowrap">
+          <span className="font-semibold">Goal:</span> First to 100 points wins!
+        </div>
+      </div>
+      <div className="justify-self-end flex items-center gap-2">
+        <button onClick={onUndo} disabled={!app.history.length} className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100 disabled:opacity-50">Undo</button>
+        <button onClick={onReset} className="px-3 py-2 rounded-2xl border border-slate-700 bg-slate-800 text-slate-100">Reset</button>
+      </div>
+    </header>
+  );
+
+  const TeamCard = ({ team }) => {
+    const members = team.members;
+    const cols = Math.max(1, members.length);
+    const total = sum(members.flatMap(m=>m.entries)) + sum(team.teamEntries||[]);
+
+    return (
+      <div className="p-3 md:p-4 rounded-2xl shadow border border-slate-700 bg-slate-800" style={{ boxShadow:`0 0 0 1px ${team.color}` }}>
+        <div className="mb-2 md:mb-3">
+          <div className="flex items-center justify-between gap-2 relative">
+            <div className="flex-1" />
+            <div className="flex items-center gap-3 relative">
+              <button onClick={()=>setPickerTeamId(team.id)} className="w-7 h-7 md:w-8 md:h-8 rounded-full border border-slate-700 shrink-0" style={{ background: team.color }} title="Pick team color"></button>
+              <div className="flex flex-col items-center gap-1">
+                <TeamNameInput value={team.name} onCommit={(v)=> { pushHistory(); renameTeam(team.id, v); }} />
+                <div className="text-xs font-medium" style={{ color: team.color }}>Team</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <button onClick={()=>addMember(team.id)} disabled={members.length>=MAX_MEMBERS} className="px-3 md:px-4 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-10 md:h-10 text-sm md:text-base disabled:opacity-50 whitespace-nowrap">Add member</button>
+              <span className="text-xs uppercase tracking-wide opacity-70">{members.length}/{MAX_MEMBERS}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center min-h-[200px]" style={{ boxShadow:`0 0 0 1px ${team.color}` }}>
+          <div className="text-xs md:text-sm uppercase tracking-wide opacity-70">Team total</div>
+          <div className="text-8xl font-black tabular-nums text-white leading-none">{total}</div>
+          <div className="inline-block px-2 py-1 rounded-lg text-sm md:text-base mt-2" style={{ background:'rgba(255,255,255,0.08)', color:team.color }}>
+            {Math.max(0,100-total)} to 100
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-2 md:gap-3" style={{ gridTemplateColumns:`repeat(${cols}, minmax(0, 1fr))` }}>
+          {members.map(m => (
+            <MemberCard
+              key={m.id}
+              teamColor={team.color}
+              member={m}
+              setNameRef={setNameRef}
+              setScoreRef={setScoreRef}
+              onRemove={()=>removeMember(team.id,m.id)}
+              onCommitName={(v)=>commitMemberName(m.id,v)}
+              onAddScore={(n)=>addScore(team.id,m.id,n)}
+              onUndo={()=>undoMember(team.id,m.id)}
+              nameTab={100 + (nameIndex.get(m.id) ?? 0)}
+              scoreTab={200 + (scoreIndex.get(m.id) ?? 0)}
+              focusNextName={(shift)=>{
+                const idx = nameIndex.get(m.id) ?? 0;
+                const nextIdx = (idx + (shift?-1:1) + nameOrder.length) % nameOrder.length;
+                const nextId = nameOrder[nextIdx].memberId;
+                requestAnimationFrame(()=> nameRefs.current[nextId]?.focus());
+              }}
+              focusNextScore={(shift)=>{
+                const idx = scoreIndex.get(m.id) ?? 0;
+                const nextIdx = (idx + (shift?-1:1) + scoreOrder.length) % scoreOrder.length;
+                const nextId = scoreOrder[nextIdx].memberId;
+                requestAnimationFrame(()=> scoreRefs.current[nextId]?.focus());
+              }}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="min-h-screen w-full text-slate-100">
+      <div className="max-w-7xl mx-auto p-3 md:p-6">
+        <Header />
+        <div className="grid md:grid-cols-2 gap-6">
+          {app.teams.map(t => <TeamCard key={t.id} team={t} />)}
+        </div>
+      </div>
+      <div className="fixed right-3 bottom-3 z-40 text-xs text-slate-400 opacity-70 select-none">{APP_VERSION}</div>
+
+      {pickerTeam && (
+        <WheelPicker
+          initial={pickerTeam.color}
+          onInput={(hex)=> setTeamColor(pickerTeam.id, hex)}  // live update on drag
+          onClose={()=> setPickerTeamId(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Team name input with local draft; commits only on blur/Enter/Tab
+const TeamNameInput = memo(function TeamNameInput({ value, onCommit }){
+  const [draft, setDraft] = useState(value);
+  useEffect(()=>{ setDraft(value); },[value]);
+  return (
+    <input
+      value={draft}
+      onChange={(e)=> setDraft(e.target.value)}
+      onBlur={()=> onCommit(draft)}
+      onKeyDown={(e)=>{ if(e.key==="Enter"||e.key==="Tab"){ e.preventDefault(); onCommit(draft); } }}
+      className="text-xl md:text-3xl font-black tracking-wide px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100 w-64 md:w-80"
+    />
+  );
+});
+
+// MemberCard is memoized; uses local state for name & score drafts (no focus hacks while typing)
+const MemberCard = memo(function MemberCard({
+  teamColor, member,
+  setNameRef, setScoreRef,
+  onRemove, onCommitName, onAddScore, onUndo,
+  nameTab, scoreTab,
+  focusNextName, focusNextScore
+}){
+  const [nameDraft, setNameDraft] = useState(member.name);
+  useEffect(()=>{ setNameDraft(member.name); },[member.name]);
+  const commitName = ()=> onCommitName(nameDraft);
+
+  const [scoreDraft, setScoreDraft] = useState("");
+  const commitScore = ()=>{
+    if(!scoreDraft.trim()) return;
+    const n = clampInt(scoreDraft);
+    if(n>=0) onAddScore(n);
+    setScoreDraft("");
+  };
+
+  return (
+    <div className="relative p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center" style={{ boxShadow:`0 0 0 1px ${teamColor}` }}>
+      <button onClick={onRemove} className="absolute top-1 right-1 md:top-2 md:right-2 rounded-md border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-[10px] md:text-xs px-1.5 py-0.5" title="Remove member">×</button>
+      <div className="flex items-center justify-center gap-2 mb-1 md:mb-2">
+        <input
+          ref={(el)=> setNameRef(member.id, el)}
+          tabIndex={nameTab}
+          value={nameDraft}
+          onFocus={(e)=> e.target.select()}
+          onChange={(e)=> setNameDraft(e.target.value)}
+          onKeyDown={(e)=>{
+            if(e.key==="Enter"){ e.preventDefault(); commitName(); }
+            if(e.key==="Tab"){ e.preventDefault(); commitName(); focusNextName(e.shiftKey); }
+          }}
+          onBlur={commitName}
+          className="font-bold text-xl md:text-2xl px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100 w-3/4"
+        />
+      </div>
+      <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70">Subtotal</div>
+      <div className="text-4xl md:text-5xl font-bold tabular-nums">{sum(member.entries)}</div>
+
+      <div className="mt-2">
+        <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70 mb-1 text-center">Per-turn</div>
+        <ul className="min-h-[1.25rem] md:min-h-[1.75rem] space-y-0.5 max-h-24 md:max-h-28 overflow-auto pr-1">
+          {member.entries.map((v,i)=>(<li key={i} className="text-[11px] md:text-sm tabular-nums">{v}</li>))}
+        </ul>
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            ref={(el)=> setScoreRef(member.id, el)}
+            tabIndex={scoreTab}
+            type="text" inputMode="numeric" pattern="[0-9]*"
+            value={scoreDraft}
+            onChange={(e)=> setScoreDraft((e.target.value||"").replace(/\D+/g,""))}
+            onKeyDown={(e)=>{
+              if(e.key==="Enter"){ e.preventDefault(); commitScore(); }
+              else if(e.key==="Tab"){ e.preventDefault(); commitScore(); focusNextScore(e.shiftKey); }
+            }}
+            className="flex-1 min-w-0 h-12 md:h-10 text-lg md:text-base px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600"
+            placeholder="score"
+          />
+          <button onClick={onUndo} className="w-10 h-10 grid place-items-center rounded-2xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-base" title="Undo last" aria-label="Undo last">↶</button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App/>);
+</script>
+</body>
 </html>
