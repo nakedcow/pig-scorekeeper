@@ -27,11 +27,11 @@
 
     <script type="text/babel" data-presets="react,env">
       const { useEffect, useMemo, useRef, useState, memo } = React;
-      const APP_VERSION = "v51 (responsive mobile: team-only)";
+      const APP_VERSION = "v53 (desktop = v50; mobile revamped)";
       const MAX_MEMBERS = 3;
       const uid = () => Math.random().toString(36).slice(2, 10);
       const STORAGE_KEY = "pig-grid-v19";
-      const sum = (arr) => arr?.reduce?.((a,b)=>a+b, 0) ?? 0;
+      const sum = (arr) => arr.reduce((a,b)=>a+b, 0);
       const clampInt = (n) => { const x = Math.floor(Number(n)); return Number.isFinite(x) ? x : 0; };
       const hexToRgb = (hex)=>{
         try {
@@ -44,14 +44,17 @@
         const {r,g,b} = hexToRgb(hex);
         return `rgba(${r},${g},${b},${a})`;
       };
-      const teamTotal = (team) => sum(team.members.flatMap(m => m.entries || [])) + sum(team.teamEntries || []);
+      const teamTotal = (team) => sum(team.members.flatMap(m => m.entries)) + sum(team.teamEntries||[]);
 
-      // Imperative preview: update CSS variables on the team card without touching React state
-      function setTeamCssVars(teamId, hex){
-        const el = document.getElementById(`team-${teamId}`);
-        if (!el) return;
-        el.style.setProperty('--team-color', hex);
-        el.style.setProperty('--team-alpha', alpha(hex, 0.18));
+      // Apply CSS vars to BOTH desktop & mobile tiles
+      function setTeamCssVarsAll(teamId, hex){
+        const ids = [`team-${teamId}`, `team-${teamId}-mobile`];
+        ids.forEach(id => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.style.setProperty('--team-color', hex);
+          el.style.setProperty('--team-alpha', alpha(hex, 0.18));
+        });
       }
 
       // Persistence
@@ -62,7 +65,6 @@
             const raw = localStorage.getItem(STORAGE_KEY);
             if (raw) {
               const loaded = { ...initial, ...JSON.parse(raw), history: [] };
-              // Fix-up: ensure teamEntries arrays exist
               loaded.teams = loaded.teams.map(t => ({ ...t, teamEntries: Array.isArray(t.teamEntries) ? t.teamEntries : [] }));
               return loaded;
             }
@@ -100,7 +102,6 @@
         return ref;
       }
 
-      // Portal helper
       function Portal({ children }){
         const elRef = useRef(null);
         if (!elRef.current) elRef.current = document.createElement("div");
@@ -112,16 +113,13 @@
         return ReactDOM.createPortal(children, elRef.current);
       }
 
-      // IRO wheel picker rendered in a portal; live preview uses CSS vars (no React setState during drag)
       const WheelPicker = memo(function WheelPicker({ teamId, color, onCommit, onClose }){
         const hostRef = useRef(null);
         const pickerRef = useRef(null);
         const [fallback, setFallback] = useState(false);
         const [hex, setHex] = useState(color);
 
-        useEffect(()=>{
-          setTeamCssVars(teamId, color);
-        }, [teamId, color]);
+        useEffect(()=>{ setTeamCssVarsAll(teamId, color); }, [teamId, color]);
 
         useEffect(()=>{
           let disposed = false;
@@ -142,7 +140,7 @@
                 if (disposed) return;
                 const h = c.hexString;
                 setHex(h);
-                setTeamCssVars(teamId, h);
+                setTeamCssVarsAll(teamId, h);
               };
               picker.on("input:change", onAnyChange);
               picker.on("color:change", onAnyChange);
@@ -180,7 +178,7 @@
                   ) : (
                     <div className="space-y-3">
                       <div className="text-xs bg-slate-700/50 p-2 rounded">CDN blocked or offline — using native picker.</div>
-                      <input type="color" value={hex} onInput={(e)=>{ const h=e.target.value; setHex(h); setTeamCssVars(teamId, h); }} className="w-full h-10 rounded border border-slate-600 bg-slate-800" />
+                      <input type="color" value={hex} onInput={(e)=>{ const h=e.target.value; setHex(h); setTeamCssVarsAll(teamId, h); }} className="w-full h-10 rounded border border-slate-600 bg-slate-800" />
                     </div>
                   )}
                 </div>
@@ -206,8 +204,8 @@
             ]},
           ],
           history: [],
-          pending: {},           // per-member inputs (desktop)
-          mobilePending: {},     // per-team inputs (mobile)
+          pending: {},           // desktop per-member
+          mobilePending: {},     // per-team (mobile)
         });
         const [focusedId, setFocusedId] = useState(null);
         const [pickerForTeam, setPickerForTeam] = useState(null);
@@ -231,39 +229,39 @@
         const renameTeam = (teamId, name) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, name } : t) }));
         const setTeamColor = (teamId, color) => setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, color } : t) }));
 
-        // Per-member entry commit (desktop)
+        // Desktop per-member scoring
         const setPending = (id, value) => setApp(p => ({ ...p, pending: { ...p.pending, [id]: value } }));
         const commitPending = (teamId, memberId) => {
           const raw = app.pending[memberId];
           if (raw == null || String(raw).trim() === "") return;
           const n = clampInt(raw);
-          if (!Number.isFinite(n) || n < 0) { setPending(memberId, ""); return; }
+          if (n < 0) { setPending(memberId, ""); return; }
           pushHistory("+" + n);
           setApp(p => ({ ...p,
-            teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, entries: [...(m.entries||[]), n] } : m) } : t),
+            teams: p.teams.map(t => t.id === teamId ? { ...t, members: t.members.map(m => m.id === memberId ? { ...m, entries: [...m.entries, n] } : m) } : t),
             pending: { ...p.pending, [memberId]: "" }
           }));
         };
 
-        // Per-team entry commit (mobile)
+        // Mobile per-team scoring
         const setMobilePending = (teamId, value) => setApp(p => ({ ...p, mobilePending: { ...p.mobilePending, [teamId]: value } }));
         const commitMobilePending = (teamId) => {
           const raw = app.mobilePending[teamId];
           if (raw == null || String(raw).trim() === "") return;
           const n = clampInt(raw);
-          if (!Number.isFinite(n) || n < 0) { setMobilePending(teamId, ""); return; }
-          pushHistory("team +" + n);
+          if (n < 0) { setMobilePending(teamId, ""); return; }
+          pushHistory(`team ${teamId} +${n}`);
           setApp(p => ({ ...p,
             teams: p.teams.map(t => t.id === teamId ? { ...t, teamEntries: [...(t.teamEntries||[]), n] } : t),
             mobilePending: { ...p.mobilePending, [teamId]: "" }
           }));
         };
         const undoLastTeamOnly = (teamId) => {
-          pushHistory("undo team last");
+          pushHistory(`undo team ${teamId} last`);
           setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, teamEntries: (t.teamEntries||[]).slice(0, -1) } : t) }));
         };
 
-        // Tab ordering for desktop per-member scoring
+        // Tab ordering (desktop)
         const scoreOrder = useMemo(()=>{
           const teams = app.teams;
           const maxRows = Math.max(0, ...teams.map(t => t.members.length));
@@ -275,6 +273,10 @@
         const memberToTeam = useMemo(()=>{ const m=new Map(); scoreOrder.forEach(o=>m.set(o.memberId,o.teamId)); return m; }, [scoreOrder]);
         const nameOrder = useMemo(()=>{ const order=[]; for(const t of app.teams) for(const m of t.members) order.push({memberId:m.id, teamId:t.id}); return order; }, [app.teams]);
         const nameIndex = useMemo(()=>{ const m=new Map(); nameOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; }, [nameOrder]);
+
+        // Mobile input refs for Enter -> next
+        const mobileInputRefs = useRef({});
+        const setMobileRef = (teamId, el) => { mobileInputRefs.current[teamId] = el; };
 
         const Header = () => (
           <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
@@ -293,17 +295,17 @@
           </header>
         );
 
-        const TeamCard = ({ team }) => {
+        // ----- DESKTOP (exact v50 behavior) -----
+        const TeamCardDesktop = ({ team }) => {
           const members = team.members;
           const cols = Math.max(1, members.length);
           const teamNameRef = useKeepFocus(team.id, focusedId);
           const condensed = members.length >= 3;
 
-          // Ensure CSS vars reflect state color on mount/update
-          useEffect(()=>{ setTeamCssVars(team.id, team.color); }, [team.id, team.color]);
+          useEffect(()=>{ setTeamCssVarsAll(team.id, team.color); }, [team.id, team.color]);
 
           return (
-            <div id={`team-${team.id}`} className="p-3 md:p-4 rounded-2xl shadow border border-slate-700 bg-slate-800"
+            <div id={`team-${team.id}`} className="hidden md:block p-3 md:p-4 rounded-2xl shadow border border-slate-700 bg-slate-800"
                  style={{ boxShadow: '0 0 0 1px var(--team-color)' }}>
               <div className="mb-2 md:mb-3">
                 <div className="flex items-center justify-between gap-2 relative">
@@ -338,8 +340,7 @@
                 </div>
               </div>
 
-              {/* Desktop-only: members & per-turn (hidden on small screens) */}
-              <div className="hidden md:grid mt-3 gap-2 md:gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+              <div className="mt-3 grid gap-2 md:gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {members.map(m => {
                   const nameRef = useKeepFocus(m.id + ":name", focusedId, false, ()=>{});
                   return (
@@ -373,7 +374,7 @@
                 })}
               </div>
 
-              <div className="hidden md:grid mt-3 gap-2 md:gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
+              <div className="mt-3 grid gap-2 md:gap-3" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}>
                 {members.map(m => {
                   const scoreRef = useKeepFocus(m.id + ":score", focusedId);
                   return (
@@ -391,10 +392,10 @@
                           onFocus={() => setFocusedId(m.id + ":score")}
                           onChange={(e) => { setPending(m.id, e.target.value); }}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter") { commitPending(team.id, m.id); setFocusedId(m.id + ":score"); }
+                            if (e.key === "Enter") { commitPending(memberToTeam.get(m.id), m.id); setFocusedId(m.id + ":score"); }
                             else if (e.key === "Tab") {
                               e.preventDefault();
-                              commitPending(team.id, m.id);
+                              commitPending(memberToTeam.get(m.id), m.id);
                               const idx = scoreIndex.get(m.id) ?? -1;
                               const nextIdx = (idx + (e.shiftKey ? -1 : 1) + scoreOrder.length) % scoreOrder.length;
                               setFocusedId(scoreOrder[nextIdx].memberId + ":score");
@@ -404,7 +405,7 @@
                           placeholder="score"
                         />
                         <button
-                          onClick={() => { pushHistory("undo member last"); setApp(p => ({ ...p, teams: p.teams.map(t => t.id === team.id ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) })); }}
+                          onClick={() => { pushHistory("undo member last"); setApp(p => ({ ...p, teams: p.teams.map(t => t.id === memberToTeam.get(m.id) ? { ...t, members: t.members.map(x => x.id === m.id ? { ...x, entries: x.entries.slice(0, -1) } : x) } : t) })); }}
                           className="w-10 h-10 grid place-items-center rounded-2xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-base"
                           title="Undo last" aria-label="Undo last">↶</button>
                       </div>
@@ -412,32 +413,61 @@
                   );
                 })}
               </div>
-
-              {/* Mobile-only: quick team log (optional preview of last few entries) */}
-              <div className="md:hidden mt-3">
-                <div className="text-[10px] uppercase tracking-wide opacity-70 mb-1">Recent team entries</div>
-                <ul className="min-h-[1.25rem] space-y-0.5 max-h-24 overflow-auto pr-1">
-                  {(team.teamEntries||[]).slice(-8).map((v,i)=>(<li key={i} className="text-[12px] tabular-nums">{v}</li>))}
-                </ul>
-              </div>
             </div>
           );
         };
 
-        return (
-          <div className="min-h-screen w-full text-slate-100 p-3 md:p-6 pb-28 md:pb-0">
-            <div className="max-w-7xl mx-auto">
-              <Header />
-              <div className="grid md:grid-cols-2 gap-6">
-                {app.teams.map(t => <TeamCard key={t.id} team={t} />)}
-              </div>
+        // ----- MOBILE top scoreboard + bottom scoring dock -----
+        const MobileTopBar = () => (
+          <div className="md:hidden fixed top-0 left-0 right-0 z-40 border-b border-slate-700 bg-slate-900/95 backdrop-blur">
+            <div className="px-3 py-2 text-center text-[12px] text-slate-300">Goal: First to 100 points wins!</div>
+            <div className="px-3 pb-2 grid grid-cols-2 gap-3 max-w-7xl mx-auto">
+              {app.teams.map((t)=> (
+                <div key={t.id} id={`team-${t.id}-mobile`}
+                     className="p-2 rounded-2xl border border-slate-700 bg-slate-800"
+                     style={{ boxShadow: '0 0 0 1px var(--team-color)' }}>
+                  <div className="flex items-center justify-between">
+                    <button onClick={()=>setPickerForTeam(t.id)} className="w-6 h-6 rounded-full border border-slate-700" style={{ background: 'var(--team-color)' }} title="Pick team color"></button>
+                    <div className="text-xs text-slate-400">to 100: <span style={{ color: 'var(--team-color)' }}>{Math.max(0, 100 - teamTotal(t))}</span></div>
+                  </div>
+                  <div className="mt-1 text-center">
+                    <div className="text-[10px] uppercase tracking-wide opacity-70">{t.name}</div>
+                    <div className="text-4xl font-black text-white tabular-nums">{teamTotal(t)}</div>
+                  </div>
+                  <div className="mt-1 flex items-center justify-center gap-2">
+                    <button onClick={()=>undoLastTeamOnly(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
+                    <button onClick={()=>setPickerForTeam(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">🎨</button>
+                  </div>
+                </div>
+              ))}
             </div>
-            <div className="fixed right-3 bottom-3 z-40 text-xs text-slate-400 opacity-70 select-none hidden md:block">{APP_VERSION}</div>
+          </div>
+        );
 
-            {/* Mobile sticky scoring bar (team-only) */}
-            <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-slate-700 bg-slate-900/95 backdrop-blur">
+        // Keyboard-aware bottom dock using VisualViewport
+        function useKeyboardAware(ref){
+          useEffect(()=>{
+            const vv = window.visualViewport;
+            if (!vv || !ref.current) return;
+            const el = ref.current;
+            const update = () => {
+              const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+              el.style.transform = `translateY(-${kb}px)`;
+            };
+            vv.addEventListener('resize', update);
+            vv.addEventListener('scroll', update);
+            update();
+            return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+          }, [ref]);
+        }
+
+        const MobileBottomDock = () => {
+          const ref = useRef(null);
+          useKeyboardAware(ref);
+          return (
+            <div ref={ref} className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-slate-700 bg-slate-900/95 backdrop-blur">
               <div className="max-w-7xl mx-auto px-3 py-2 grid grid-cols-2 gap-3">
-                {app.teams.map((t, idx)=> (
+                {app.teams.map((t, idx) => (
                   <div key={t.id} id={`mobile-team-${t.id}`} className="p-2 rounded-2xl border border-slate-700 bg-slate-800" style={{ boxShadow: `0 0 0 1px ${t.color}` }}>
                     <div className="text-xs mb-1 flex items-center justify-between">
                       <span className="font-semibold" style={{ color: t.color }}>{t.name}</span>
@@ -451,7 +481,6 @@
                         onKeyDown={(e)=>{
                           if (e.key === "Enter") {
                             commitMobilePending(t.id);
-                            // focus next team's input
                             const other = app.teams[(idx+1)%app.teams.length]?.id;
                             if (other) {
                               const el = document.querySelector(`#mobile-team-${other} input[type="number"]`);
@@ -459,16 +488,30 @@
                             }
                           }
                         }}
-                        className="flex-1 min-w-0 h-10 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600"
+                        className="flex-1 min-w-0 h-11 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600"
                       />
-                      <button onClick={()=>commitMobilePending(t.id)} className="px-3 h-10 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add</button>
-                      <button onClick={()=>undoLastTeamOnly(t.id)} className="px-2 h-10 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Undo last team">↶</button>
+                      <button onClick={()=>commitMobilePending(t.id)} className="px-3 h-11 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add</button>
+                      <button onClick={()=>undoLastTeamOnly(t.id)} className="px-2 h-11 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Undo last team">↶</button>
                     </div>
                   </div>
                 ))}
               </div>
               <div className="text-center text-[10px] text-slate-400 py-1">{APP_VERSION}</div>
             </div>
+          );
+        };
+
+        return (
+          <div className="min-h-screen w-full text-slate-100 pb-[13rem] md:pb-0">
+            <div className="max-w-7xl mx-auto p-3 md:p-6">
+              <Header />
+              <MobileTopBar />
+              <div className="pt-[180px] md:pt-0 grid md:grid-cols-2 gap-6">
+                {app.teams.map(t => <TeamCardDesktop key={t.id} team={t} />)}
+              </div>
+            </div>
+
+            <MobileBottomDock />
 
             {pickerForTeam && (
               <WheelPicker
