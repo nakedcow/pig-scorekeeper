@@ -26,7 +26,7 @@
 
 <script type="text/babel" data-presets="react,env">
 const {useState,useEffect,useMemo,useRef,memo} = React;
-const APP_VERSION = "V1.70 (desktop + mobile)";
+const APP_VERSION = "V1.71 (desktop + mobile keyboard)";
 const MAX_MEMBERS = 3;
 const uid = () => Math.random().toString(36).slice(2,10);
 const STORAGE_KEY = "pig-grid-v19";
@@ -125,7 +125,7 @@ const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
   );
 });
 
-// -------- Reusable inputs with local drafts (avoid re-renders while typing)
+// Reusable inputs with local drafts (avoid re-renders while typing)
 const TeamNameInput = memo(function TeamNameInput({ value, onCommit }){
   const [draft, setDraft] = useState(value);
   useEffect(()=>{ setDraft(value); },[value]);
@@ -240,23 +240,20 @@ function App(){
 
   // Team/member mutations
   const addMember = (teamId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.length>=MAX_MEMBERS ? t.members : [...t.members,{id:uid(),name:`Member ${t.members.length+1}`,entries:[]}]} : t)})); };
-  const removeMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.filter(m=>m.id!==memberId)} : t)})); };
+  const removeMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.filter(m=>m.id!==memberId)} : t) })); };
   const renameTeam = (teamId, name)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, name} : t)}));
   const commitMemberName = (memberId, name)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> ({...t, members:t.members.map(m=> m.id===memberId ? {...m, name} : m)}))})); };
   const addScore = (teamId, memberId, n)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:[...m.entries, n]} : m)} : t)})); };
   const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
   const setTeamColor = (teamId, color)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, color} : t)}));
 
-  // Mobile team-level scoring
-  const [mobilePending, setMobilePending] = useState({});
-  const setMobileValue = (teamId, val)=> setMobilePending(p => ({ ...p, [teamId]: (val||"").replace(/\D+/g,"") }));
-  const addTeamScore = (teamId)=> {
-    const raw = mobilePending[teamId];
-    if (!raw || raw.trim()==="") return;
+  // Team-level scoring helpers for Mobile
+  const addTeamScoreValue = (teamId, value) => {
+    const raw = (value||"").trim();
+    if (!raw) return;
     const n = clampInt(raw);
     pushHistory();
     setApp(p => ({ ...p, teams: p.teams.map(t => t.id === teamId ? { ...t, teamEntries: [...(t.teamEntries||[]), n] } : t) }));
-    setMobilePending(p => ({ ...p, [teamId]: "" }));
   };
   const undoLastTeamOnly = (teamId)=> {
     pushHistory();
@@ -280,20 +277,22 @@ function App(){
   const [pickerTeamId, setPickerTeamId] = useState(null);
   const pickerTeam = pickerTeamId ? app.teams.find(t => t.id === pickerTeamId) : null;
 
-  // Keyboard-aware bottom dock for mobile
+  // Keyboard-aware bottom dock for mobile — throttled & resize-only
   function useKeyboardAwareBottom(ref){
     useEffect(()=>{
       const vv = window.visualViewport;
       if (!vv || !ref.current) return;
       const el = ref.current;
+      let raf = null;
       const apply = () => {
         const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
         el.style.bottom = kb + "px";
+        raf = null;
       };
-      vv.addEventListener('resize', apply);
-      vv.addEventListener('scroll', apply);
+      const onResize = () => { if (!raf) raf = requestAnimationFrame(apply); };
+      vv.addEventListener('resize', onResize);
       apply();
-      return () => { vv.removeEventListener('resize', apply); vv.removeEventListener('scroll', apply); };
+      return () => { vv.removeEventListener('resize', onResize); if (raf) cancelAnimationFrame(raf); };
     }, [ref]);
   }
 
@@ -385,18 +384,29 @@ function App(){
     const refDock = useRef(null);
     useKeyboardAwareBottom(refDock);
 
+    // local drafts so typing doesn't re-render app
+    const [drafts, setDrafts] = useState({});
+    useEffect(()=>{
+      // ensure both team keys exist
+      setDrafts(prev => {
+        const next = { ...prev };
+        for (const t of app.teams) if (!(t.id in next)) next[t.id] = "";
+        return next;
+      });
+    }, [app.teams]);
+
     const mobileInputRefs = useRef({});
     const setMobileRef = (teamId, el) => { mobileInputRefs.current[teamId] = el; };
 
-    const commitAndFocusOther = (teamId, idx) => {
-      addTeamScore(teamId);
-      const other = app.teams[(idx+1)%app.teams.length]?.id;
-      if (other) {
-        requestAnimationFrame(()=> mobileInputRefs.current[other]?.focus({ preventScroll: true }));
-      }
-    };
-
     const totalOf = (t) => sum(t.members.flatMap(m=>m.entries)) + sum(t.teamEntries||[]);
+
+    const commitAndFocusOther = (teamId, idx) => {
+      const value = drafts[teamId] ?? "";
+      addTeamScoreValue(teamId, value);
+      setDrafts(d => ({ ...d, [teamId]: "" }));
+      const other = app.teams[(idx+1)%app.teams.length]?.id;
+      if (other) requestAnimationFrame(()=> mobileInputRefs.current[other]?.focus({ preventScroll: true }));
+    };
 
     return (
       <div className="md:hidden">
@@ -449,8 +459,8 @@ function App(){
                     enterKeyHint="next"
                     autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
                     placeholder="score"
-                    value={mobilePending[t.id] ?? ""}
-                    onChange={(e)=> setMobileValue(t.id, e.target.value)}
+                    value={drafts[t.id] ?? ""}
+                    onChange={(e)=> setDrafts(d => ({ ...d, [t.id]: (e.target.value||"").replace(/\D+/g,"") }))}
                     onKeyDown={(e)=>{
                       if (e.key === "Enter") {
                         e.preventDefault();
