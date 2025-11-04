@@ -26,7 +26,7 @@
 
 <script type="text/babel" data-presets="react,env">
 const {useState,useEffect,useMemo,useRef,memo} = React;
-const APP_VERSION = "V1.72 (desktop + mobile keyboard persist)";
+const APP_VERSION = "V1.73 (desktop + mobile keyboard persist+)";
 const MAX_MEMBERS = 3;
 const uid = () => Math.random().toString(36).slice(2,10);
 const STORAGE_KEY = "pig-grid-v19";
@@ -247,7 +247,7 @@ function App(){
   const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
   const setTeamColor = (teamId, color)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, color} : t)}));
 
-  // Team-level scoring helpers for Mobile
+  // Team-level scoring helpers for Mobile (uncontrolled inputs)
   const addTeamScoreValue = (teamId, value) => {
     const raw = (value||"").trim();
     if (!raw) return;
@@ -379,45 +379,41 @@ function App(){
     </div>
   );
 
-  // ----- Mobile layout (team-only scoring) -----
+  // ----- Mobile layout (team-only scoring, UNCONTROLLED inputs) -----
   const Mobile = () => {
     const refDock = useRef(null);
     useKeyboardAwareBottom(refDock);
-
-    // local drafts so typing doesn't re-render app
-    const [drafts, setDrafts] = useState({});
-    useEffect(()=>{
-      setDrafts(prev => {
-        const next = { ...prev };
-        for (const t of app.teams) if (!(t.id in next)) next[t.id] = "";
-        return next;
-      });
-    }, [app.teams]);
 
     const mobileInputRefs = useRef({});
     const setMobileRef = (teamId, el) => { mobileInputRefs.current[teamId] = el; };
 
     const totalOf = (t) => sum(t.members.flatMap(m=>m.entries)) + sum(t.teamEntries||[]);
 
-    // NEW: focus other team FIRST, then commit current value after a tick
-    const focusOtherThenCommit = (currentTeamId, currentIndex) => {
+    const focusOtherThenCommit = (currentTeamId, currentIndex, viaButton=false) => {
+      const currentEl = mobileInputRefs.current[currentTeamId];
       const otherId = app.teams[(currentIndex+1)%app.teams.length]?.id;
       const nextEl = otherId ? mobileInputRefs.current[otherId] : null;
-      const val = drafts[currentTeamId] ?? "";
+      const raw = (currentEl?.value || "").replace(/\D+/g, "");
 
-      // focus next field immediately in the same event (keeps keyboard up on iOS)
+      // Focus next first (keeps keyboard on many Android browsers)
       if (nextEl) {
         try {
           nextEl.focus({ preventScroll: true });
           const len = (nextEl.value || "").length;
-          if (nextEl.setSelectionRange) nextEl.setSelectionRange(len, len);
+          nextEl.setSelectionRange?.(len, len);
         } catch {}
       }
 
-      // commit AFTER focus so the re-render doesn't steal focus
+      // Commit after focusing the next
       setTimeout(() => {
-        addTeamScoreValue(currentTeamId, val);
-        setDrafts(d => ({ ...d, [currentTeamId]: "" }));
+        if (raw) addTeamScoreValue(currentTeamId, raw);
+        if (currentEl) currentEl.value = "";
+        // reinforce focus on next after render
+        requestAnimationFrame(() => {
+          nextEl?.focus({ preventScroll: true });
+          const len2 = (nextEl?.value || "").length;
+          nextEl?.setSelectionRange?.(len2, len2);
+        });
       }, 0);
     };
 
@@ -468,28 +464,29 @@ function App(){
                 <div className="flex items-center gap-2">
                   <input
                     ref={el => setMobileRef(t.id, el)}
-                    type="text" inputMode="numeric" pattern="[0-9]*"
+                    type="tel" inputMode="numeric" pattern="[0-9]*"
                     enterKeyHint="next"
                     autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
                     placeholder="score"
-                    value={drafts[t.id] ?? ""}
-                    onChange={(e)=> setDrafts(d => ({ ...d, [t.id]: (e.target.value||"").replace(/\D+/g,"") }))}
+                    defaultValue=""
                     onKeyDown={(e)=>{
                       if (e.key === "Enter") {
-                        // keep keyboard: focus other first, then commit
                         e.preventDefault();
+                        e.stopPropagation();
                         focusOtherThenCommit(t.id, idx);
                       }
                     }}
                     className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600"
                   />
                   <button
+                    type="button"
                     tabIndex="-1"
                     onMouseDown={(e)=> e.preventDefault()}  /* prevent button from stealing focus */
                     onTouchStart={(e)=> e.preventDefault()}  /* prevents blur on touch */
-                    onClick={()=> focusOtherThenCommit(t.id, idx)}
+                    onClick={()=> focusOtherThenCommit(t.id, idx, true)}
                     className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add</button>
                   <button
+                    type="button"
                     tabIndex="-1"
                     onMouseDown={(e)=> e.preventDefault()}
                     onTouchStart={(e)=> e.preventDefault()}
