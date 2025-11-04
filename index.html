@@ -26,7 +26,7 @@
 
 <script type="text/babel" data-presets="react,env">
 const {useState,useEffect,useMemo,useRef,memo} = React;
-const APP_VERSION = "V1.73 (desktop + mobile keyboard persist+)";
+const APP_VERSION = "V1.74 (desktop + mobile single-input)";
 const MAX_MEMBERS = 3;
 const uid = () => Math.random().toString(36).slice(2,10);
 const STORAGE_KEY = "pig-grid-v19";
@@ -247,7 +247,7 @@ function App(){
   const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
   const setTeamColor = (teamId, color)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, color} : t)}));
 
-  // Team-level scoring helpers for Mobile (uncontrolled inputs)
+  // Team-level scoring helpers for Mobile
   const addTeamScoreValue = (teamId, value) => {
     const raw = (value||"").trim();
     if (!raw) return;
@@ -379,42 +379,54 @@ function App(){
     </div>
   );
 
-  // ----- Mobile layout (team-only scoring, UNCONTROLLED inputs) -----
+  // ----- Mobile layout (team-only scoring, SINGLE always-focused input) -----
   const Mobile = () => {
     const refDock = useRef(null);
     useKeyboardAwareBottom(refDock);
 
-    const mobileInputRefs = useRef({});
-    const setMobileRef = (teamId, el) => { mobileInputRefs.current[teamId] = el; };
+    const [activeIdx, setActiveIdx] = useState(0); // which team we're entering for
+    const [draft, setDraft] = useState("");
+    const inpRef = useRef(null);
+
+    useEffect(()=>{
+      // keep the input focused if user already focused it
+      const el = inpRef.current;
+      if (document.activeElement === el) {
+        requestAnimationFrame(()=> el?.focus({ preventScroll: true }));
+      }
+    }, [activeIdx]);
 
     const totalOf = (t) => sum(t.members.flatMap(m=>m.entries)) + sum(t.teamEntries||[]);
+    const activeTeam = app.teams[activeIdx];
+    const nextIdx = (activeIdx + 1) % app.teams.length;
+    const nextTeam = app.teams[nextIdx];
 
-    const focusOtherThenCommit = (currentTeamId, currentIndex, viaButton=false) => {
-      const currentEl = mobileInputRefs.current[currentTeamId];
-      const otherId = app.teams[(currentIndex+1)%app.teams.length]?.id;
-      const nextEl = otherId ? mobileInputRefs.current[otherId] : null;
-      const raw = (currentEl?.value || "").replace(/\D+/g, "");
-
-      // Focus next first (keeps keyboard on many Android browsers)
-      if (nextEl) {
-        try {
-          nextEl.focus({ preventScroll: true });
-          const len = (nextEl.value || "").length;
-          nextEl.setSelectionRange?.(len, len);
-        } catch {}
-      }
-
-      // Commit after focusing the next
-      setTimeout(() => {
-        if (raw) addTeamScoreValue(currentTeamId, raw);
-        if (currentEl) currentEl.value = "";
-        // reinforce focus on next after render
-        requestAnimationFrame(() => {
-          nextEl?.focus({ preventScroll: true });
-          const len2 = (nextEl?.value || "").length;
-          nextEl?.setSelectionRange?.(len2, len2);
+    const commitActive = () => {
+      const raw = (draft||"").trim();
+      if (!raw) return;
+      const n = clampInt(raw);
+      if (n>=0) {
+        // snapshot + commit
+        const tId = activeTeam.id;
+        // push history
+        setApp(p => {
+          const snap = JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
+          const hist = [...p.history.slice(-49), snap];
+          const teams = p.teams.map(t => t.id === tId ? { ...t, teamEntries: [...(t.teamEntries||[]), n] } : t);
+          return { ...p, teams, history: hist };
         });
-      }, 0);
+      }
+      setDraft("");
+    };
+
+    const enterAndSwap = () => {
+      // keep focus: prevent default submit/done behavior
+      const el = inpRef.current;
+      try { el?.focus({ preventScroll: true }); } catch {}
+      commitActive();
+      setActiveIdx(nextIdx);
+      // reinforce focus after render
+      requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true }));
     };
 
     return (
@@ -424,8 +436,15 @@ function App(){
           <div className="px-3 py-2 flex items-center justify-between text-slate-300">
             <div className="text-[12px]">Goal: First to 100 points wins!</div>
             <div className="flex items-center gap-2">
-              <button onClick={onUndo} disabled={!app.history.length} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs disabled:opacity-50">Undo</button>
-              <button onClick={onReset} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
+              <button onClick={()=>{ setApp(p=> ({...p, history: p.history.slice(0,-1), ...(p.history.at(-1)||{} )})); }} disabled={!app.history.length} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs disabled:opacity-50">Undo</button>
+              <button onClick={()=>{
+                if (!confirm("Reset scores (no archive)?")) return;
+                setApp(p=>{
+                  const snap = JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
+                  const hist = [...p.history.slice(-49), snap];
+                  return { ...p, history: hist, teams: p.teams.map(t => ({...t, teamEntries: [], members: t.members.map(m => ({...m, entries: []})) })) };
+                });
+              }} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
             </div>
           </div>
           {/* Score tiles */}
@@ -441,7 +460,13 @@ function App(){
                   <div className="text-7xl font-black text-white tabular-nums leading-none">{totalOf(t)}</div>
                 </div>
                 <div className="mt-1 flex items-center justify-center gap-2">
-                  <button onClick={()=>undoLastTeamOnly(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
+                  <button onClick={()=>{
+                    setApp(p=>{
+                      const snap = JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
+                      const hist = [...p.history.slice(-49), snap];
+                      return { ...p, history: hist, teams: p.teams.map(x => x.id===t.id ? {...x, teamEntries:(x.teamEntries||[]).slice(0,-1)} : x) };
+                    });
+                  }} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
                   <button onClick={()=>setPickerTeamId(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">🎨</button>
                 </div>
               </div>
@@ -452,53 +477,53 @@ function App(){
         {/* Spacer under top tiles */}
         <div className="pt-[190px]"></div>
 
-        {/* Bottom scoring dock */}
+        {/* Bottom scoring dock (single input) */}
         <div ref={refDock} className="fixed left-0 right-0 z-50 border-t border-slate-700 bg-slate-900/95 backdrop-blur" style={{ bottom: 0 }}>
-          <div className="max-w-7xl mx-auto px-3 py-2 grid grid-cols-2 gap-3 relative">
-            {app.teams.map((t, idx) => (
-              <div key={t.id} className="p-2 rounded-2xl border border-slate-700 bg-slate-800" style={{ boxShadow: `0 0 0 1px ${t.color}` }}>
-                <div className="text-xs mb-1 flex items-center justify-between">
-                  <span className="font-semibold" style={{ color: t.color }}>{t.name}</span>
-                  <span className="text-slate-400 tabular-nums">{totalOf(t)}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <input
-                    ref={el => setMobileRef(t.id, el)}
-                    type="tel" inputMode="numeric" pattern="[0-9]*"
-                    enterKeyHint="next"
-                    autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
-                    placeholder="score"
-                    defaultValue=""
-                    onKeyDown={(e)=>{
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        focusOtherThenCommit(t.id, idx);
-                      }
-                    }}
-                    className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600"
-                  />
-                  <button
-                    type="button"
-                    tabIndex="-1"
-                    onMouseDown={(e)=> e.preventDefault()}  /* prevent button from stealing focus */
-                    onTouchStart={(e)=> e.preventDefault()}  /* prevents blur on touch */
-                    onClick={()=> focusOtherThenCommit(t.id, idx, true)}
-                    className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add</button>
-                  <button
-                    type="button"
-                    tabIndex="-1"
-                    onMouseDown={(e)=> e.preventDefault()}
-                    onTouchStart={(e)=> e.preventDefault()}
-                    onClick={()=> undoLastTeamOnly(t.id)}
-                    className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Undo last team">↶</button>
-                </div>
+          <div className="max-w-7xl mx-auto px-3 py-3 relative">
+            <div className="flex items-center gap-2">
+              <div className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 text-xs whitespace-nowrap" style={{ color: activeTeam?.color }}>
+                Active: <span className="font-semibold">{activeTeam?.name}</span>
               </div>
-            ))}
+              <input
+                ref={inpRef}
+                type="tel" inputMode="numeric" pattern="[0-9]*"
+                enterKeyHint="next"
+                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
+                placeholder={`Add ${activeTeam?.name} score`}
+                value={draft}
+                onChange={(e)=> setDraft((e.target.value||"").replace(/\D+/g,""))}
+                onKeyDown={(e)=>{
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    enterAndSwap();
+                  }
+                }}
+                onKeyUp={(e)=>{
+                  if (e.key === "Enter") {
+                    // reinforce focus on keyup for Firefox+Gboard
+                    requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true }));
+                  }
+                }}
+                className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600"
+              />
+              <button
+                type="button"
+                tabIndex="-1"
+                onMouseDown={(e)=> e.preventDefault()}
+                onTouchStart={(e)=> e.preventDefault()}
+                onClick={enterAndSwap}
+                className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add ↦</button>
+              <button
+                type="button"
+                tabIndex="-1"
+                onMouseDown={(e)=> e.preventDefault()}
+                onTouchStart={(e)=> e.preventDefault()}
+                onClick={()=>{ setActiveIdx(nextIdx); requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true })); }}
+                className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Switch team">↔</button>
+            </div>
             <div className="absolute right-2 -bottom-5 text-[10px] text-slate-400 opacity-70">{APP_VERSION}</div>
           </div>
         </div>
-
       </div>
     );
   };
