@@ -22,34 +22,48 @@
   </style>
 </head>
 <body class="bg-slate-900">
-  <div id="root"></div>
+  <div id="root"><div class="p-6 text-slate-100">Loading…</div></div>
   <div id="portal-root"></div>
 
-<script type="text/babel" data-presets="react,env">
+<script type="text/babel" data-presets="env,react">
 const {useState,useEffect,useMemo,useRef,memo} = React;
-const APP_VERSION = "V1.77 (mobile flip fix + IME-safe)";
+const APP_VERSION = "V1.78 (desktop stable + mobile flip fix)";
 const MAX_MEMBERS = 3;
 const uid = () => Math.random().toString(36).slice(2,10);
 const STORAGE_KEY = "pig-grid-v19";
 const sum = (a)=>a.reduce((x,y)=>x+y,0);
 const clampInt = (n)=>{ const x = Math.floor(Number(n)); return Number.isFinite(x)?x:0; };
 
+// Simple runtime error banner so we don't get a blank screen
+window.addEventListener("error", (e)=>{
+  const pre = document.createElement("pre");
+  pre.style.cssText = "position:fixed;left:8px;bottom:8px;right:8px;max-height:40vh;overflow:auto;background:#111827;color:#fca5a5;border:1px solid #374151;border-radius:12px;padding:8px;z-index:99999;font-size:12px;";
+  pre.textContent = "JS error: " + (e.message||e.error||"") + "\n(See console for details)";
+  document.body.appendChild(pre);
+}, { once:true });
+
 function usePersistedState(initial){
   const [state,setState] = useState(()=>{
     try{
       const raw = localStorage.getItem(STORAGE_KEY);
       if(raw){
-        const loaded = { ...initial, ...JSON.parse(raw) };
-        loaded.teams = loaded.teams.map(t=>({ ...t, teamEntries:Array.isArray(t.teamEntries)?t.teamEntries:[] }));
-        loaded.history = []; // don't hydrate past history
+        const loaded = Object.assign({}, initial, JSON.parse(raw));
+        loaded.teams = (loaded.teams||initial.teams).map(t=>({
+          id: t.id||uid(),
+          name: t.name||"Team",
+          color: t.color||"#38bdf8",
+          teamEntries: Array.isArray(t.teamEntries)?t.teamEntries:[],
+          members: (t.members||[]).map(m=>({ id:m.id||uid(), name:m.name||"Member", entries:Array.isArray(m.entries)?m.entries:[] }))
+        }));
+        loaded.history = []; // don't hydrate history
         return loaded;
       }
     }catch{}
     return initial;
   });
   useEffect(()=>{
-    const {history,...persist} = state;
-    const id = setTimeout(()=>{ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(persist)); }catch{} }, 120);
+    const {history, ...persist} = state;
+    const id = setTimeout(()=>{ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(persist)); }catch{} }, 100);
     return ()=> clearTimeout(id);
   },[state]);
   return [state,setState];
@@ -67,7 +81,7 @@ function Portal({ children }){
   return ReactDOM.createPortal(children, elRef.current);
 }
 
-// Color wheel overlay
+// Color wheel overlay (wheel + sliders). Live updates colors.
 const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
   const hostRef = useRef(null);
   const pickerRef = useRef(null);
@@ -86,16 +100,18 @@ const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
           { component: iro.ui.Slider, options: { sliderType: "value" } },
         ],
       });
-      const onAny = (c)=> onInput?.(c.hexString);
+      const onAny = (c)=> onInput && onInput(c.hexString);
       picker.on("input:change", onAny);
       picker.on("color:change", onAny);
       pickerRef.current = picker;
     } catch(e){ setFallback(true); }
     return ()=>{
       try {
-        pickerRef.current?.off("input:change");
-        pickerRef.current?.off("color:change");
-        pickerRef.current?.destroy();
+        if (pickerRef.current) {
+          pickerRef.current.off("input:change");
+          pickerRef.current.off("color:change");
+          pickerRef.current.destroy();
+        }
       } catch {}
       pickerRef.current = null;
     };
@@ -116,7 +132,7 @@ const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
             ) : (
               <div className="space-y-2">
                 <div className="text-xs bg-slate-700/50 p-2 rounded">CDN blocked — using native picker.</div>
-                <input type="color" defaultValue={initial} onInput={(e)=>onInput?.(e.target.value)} className="w-full h-10 rounded border border-slate-600 bg-slate-800"/>
+                <input type="color" defaultValue={initial} onInput={(e)=>onInput && onInput(e.target.value)} className="w-full h-10 rounded border border-slate-600 bg-slate-800"/>
               </div>
             )}
           </div>
@@ -126,7 +142,7 @@ const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
   );
 });
 
-// Reusable inputs with local drafts (avoid re-renders while typing)
+// Input for team name with local draft
 const TeamNameInput = memo(function TeamNameInput({ value, onCommit }){
   const [draft, setDraft] = useState(value);
   useEffect(()=>{ setDraft(value); },[value]);
@@ -248,7 +264,24 @@ function App(){
   const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
   const setTeamColor = (teamId, color)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, color} : t)}));
 
-  // Desktop UI
+  // Orders for tabbing (desktop only)
+  const nameOrder = useMemo(()=>{ const order=[]; for(let ti=0; ti<app.teams.length; ti++){ const t=app.teams[ti]; for(let mi=0; mi<t.members.length; mi++){ const m=t.members[mi]; order.push({memberId:m.id, teamId:t.id}); } } return order; },[app.teams]);
+  const nameIndex = useMemo(()=>{ const m=new Map(); for(let i=0;i<nameOrder.length;i++){ m.set(nameOrder[i].memberId,i);} return m; },[nameOrder]);
+  const scoreOrder = useMemo(()=>{
+    const teams=app.teams; const maxRows=Math.max(0,...teams.map(t=>t.members.length)); const order=[];
+    for(let r=0;r<maxRows;r++){ for(let ti=0;ti<teams.length;ti++){ const t=teams[ti]; const m=t.members[r]; if(m) order.push({memberId:m.id, teamId:t.id}); } }
+    return order;
+  },[app.teams]);
+  const scoreIndex = useMemo(()=>{ const m=new Map(); for(let i=0;i<scoreOrder.length;i++){ m.set(scoreOrder[i].memberId,i);} return m; },[scoreOrder]);
+
+  const nameRefs = useRef({}); const setNameRef = (id,el)=> (nameRefs.current[id]=el);
+  const scoreRefs = useRef({}); const setScoreRef = (id,el)=> (scoreRefs.current[id]=el);
+
+  // Color picker state (both views)
+  const [pickerTeamId, setPickerTeamId] = useState(null);
+  const pickerTeam = pickerTeamId ? app.teams.find(t => t.id === pickerTeamId) : null;
+
+  // ----- Desktop layout (kept consistent with your golden build) -----
   const Desktop = () => (
     <div className="hidden md:block">
       <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
@@ -307,10 +340,20 @@ function App(){
                     onCommitName={(v)=>commitMemberName(m.id,v)}
                     onAddScore={(n)=>addScore(team.id,m.id,n)}
                     onUndo={()=>undoMember(team.id,m.id)}
-                    nameTab={100}
-                    scoreTab={200}
-                    focusNextName={()=>{}}
-                    focusNextScore={()=>{}}
+                    nameTab={100 + (nameIndex.get(m.id) || 0)}
+                    scoreTab={200 + (scoreIndex.get(m.id) || 0)}
+                    focusNextName={(shift)=>{
+                      const idx = nameIndex.get(m.id) || 0;
+                      const nextIdx = (idx + (shift?-1:1) + nameOrder.length) % nameOrder.length;
+                      const nextId = nameOrder[nextIdx].memberId;
+                      setTimeout(()=> { const el = nameRefs.current[nextId]; if (el) el.focus(); }, 0);
+                    }}
+                    focusNextScore={(shift)=>{
+                      const idx = scoreIndex.get(m.id) || 0;
+                      const nextIdx = (idx + (shift?-1:1) + scoreOrder.length) % scoreOrder.length;
+                      const nextId = scoreOrder[nextIdx].memberId;
+                      setTimeout(()=> { const el = scoreRefs.current[nextId]; if (el) el.focus(); }, 0);
+                    }}
                   />
                 ))}
               </div>
@@ -321,7 +364,7 @@ function App(){
     </div>
   );
 
-  // ----- Mobile (single input; IME-safe; flip after commit using ref) -----
+  // ----- Mobile layout (single input; controlled; robust flip) -----
   const Mobile = () => {
     const refDock = useRef(null);
     useEffect(()=>{
@@ -335,41 +378,45 @@ function App(){
       return ()=> { vv.removeEventListener('resize', onRes); if(raf) cancelAnimationFrame(raf); };
     },[]);
 
-    const inpRef = useRef(null);
-    const bufferRef = useRef("");   // latest digits from onInput
+    const inputRef = useRef(null);
     const [activeIdx, setActiveIdx] = useState(0);
+    const [draft, setDraft] = useState("");
 
-    useEffect(()=>{ requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true })); },[]);
+    useEffect(()=>{
+      // keep focus on mount and when team flips
+      setTimeout(()=> { if (inputRef.current) { try { inputRef.current.focus({ preventScroll: true }); } catch {} } }, 0);
+    }, [activeIdx]);
 
     const totalOf = (t) => sum(t.members.flatMap(m=>m.entries)) + sum(t.teamEntries||[]);
 
-    const commitFromBuffer = () => {
-      const digits = bufferRef.current.trim();
-      if (!digits) return false;
-      const n = clampInt(digits);
-      const tId = app.teams[activeIdx]?.id;
-      if (!tId) return false;
+    const commit = () => {
+      const raw = (draft||"").trim();
+      if (!raw) return false;
+      const n = clampInt(raw);
+      const teamId = app.teams[activeIdx] ? app.teams[activeIdx].id : null;
+      if (!teamId) return false;
       // snapshot + commit
       setApp(p => {
         const snap = JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
         const hist = [...p.history.slice(-49), snap];
-        const teams = p.teams.map(t => t.id === tId ? { ...t, teamEntries: [...(t.teamEntries||[]), n] } : t);
+        const teams = p.teams.map(t => t.id === teamId ? { ...t, teamEntries: [...(t.teamEntries||[]), n] } : t);
         return { ...p, teams, history: hist };
       });
-      // clear underlying input quickly but keep focus (avoid IME drop)
-      const el = inpRef.current;
-      if (el) { el.value = ""; }
-      bufferRef.current = "";
       return true;
     };
 
-    const handleAdd = () => {
-      // Let IME commit the latest key first, then read buffer (RAF)
-      requestAnimationFrame(()=>{
-        const ok = commitFromBuffer();
-        if (ok) setActiveIdx(i => (i+1) % app.teams.length);
-        requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true }));
-      });
+    const addAndFlip = () => {
+      // Keep focus; prevent IME from closing
+      const el = inputRef.current;
+      if (el) { try { el.focus({ preventScroll: true }); } catch {} }
+      const ok = commit();
+      if (ok) {
+        setDraft("");
+        // Flip after commit using functional update
+        setActiveIdx(i => (i+1) % app.teams.length);
+      }
+      // Re-assert focus
+      setTimeout(()=>{ if (inputRef.current) { try { inputRef.current.focus({ preventScroll: true }); } catch {} } }, 0);
     };
 
     return (
@@ -379,15 +426,8 @@ function App(){
           <div className="px-3 py-2 flex items-center justify-between text-slate-300">
             <div className="text-[12px]">Goal: First to 100 points wins!</div>
             <div className="flex items-center gap-2">
-              <button onClick={()=> setApp(p=>{
-                if(!p.history.length) return p;
-                const last = p.history[p.history.length-1];
-                return { ...p, teams: last.teams, target: last.target, history: p.history.slice(0,-1) };
-              })} disabled={!app.history.length} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs disabled:opacity-50">Undo</button>
-              <button onClick={()=>{
-                if (!confirm("Reset scores (no archive)?")) return;
-                setApp(p => ({ ...p, teams: p.teams.map(t => ({ ...t, teamEntries: [], members: t.members.map(m => ({ ...m, entries: [] })) })) }));
-              }} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
+              <button onClick={onUndo} disabled={!app.history.length} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs disabled:opacity-50">Undo</button>
+              <button onClick={onReset} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
             </div>
           </div>
           {/* Score tiles */}
@@ -404,11 +444,8 @@ function App(){
                 </div>
                 <div className="mt-1 flex items-center justify-center gap-2">
                   <button onClick={()=>{
-                    setApp(p=>{
-                      const snap = JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
-                      const hist = [...p.history.slice(-49), snap];
-                      return { ...p, history: hist, teams: p.teams.map(x => x.id===t.id ? {...x, teamEntries:(x.teamEntries||[]).slice(0,-1)} : x) };
-                    });
+                    pushHistory();
+                    setApp(p=> ({ ...p, teams: p.teams.map(x => x.id===t.id ? {...x, teamEntries:(x.teamEntries||[]).slice(0,-1)} : x) }));
                   }} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
                   <button onClick={()=>setPickerTeamId(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">🎨</button>
                 </div>
@@ -424,35 +461,26 @@ function App(){
         <div ref={refDock} className="fixed left-0 right-0 z-50 border-t border-slate-700 bg-slate-900/95 backdrop-blur" style={{ bottom: 0 }}>
           <div className="max-w-7xl mx-auto px-3 py-3 relative">
             <div className="flex items-center gap-2">
-              <div className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 text-xs whitespace-nowrap" style={{ color: app.teams[activeIdx]?.color }}>
-                Active: <span className="font-semibold">{app.teams[activeIdx]?.name}</span>
+              <div className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 text-xs whitespace-nowrap" style={{ color: app.teams[activeIdx] ? app.teams[activeIdx].color : "#94a3b8" }}>
+                Active: <span className="font-semibold">{app.teams[activeIdx] ? app.teams[activeIdx].name : ""}</span>
               </div>
               <input
-                ref={inpRef}
+                ref={inputRef}
                 type="tel" inputMode="numeric" pattern="[0-9]*"
                 enterKeyHint="next"
                 autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
-                placeholder={`Add ${app.teams[activeIdx]?.name} score`}
-                defaultValue=""
-                onInput={(e)=>{
-                  const digits = (e.currentTarget.value || "").replace(/\D+/g,"");
-                  if (digits !== e.currentTarget.value) {
-                    const start = e.currentTarget.selectionStart;
-                    const end = e.currentTarget.selectionEnd;
-                    e.currentTarget.value = digits;
-                    try { e.currentTarget.setSelectionRange(start-1, end-1); } catch {}
-                  }
-                  bufferRef.current = digits;
-                }}
+                placeholder={app.teams[activeIdx] ? ("Add " + app.teams[activeIdx].name + " score") : "Add score"}
+                value={draft}
+                onChange={(e)=> setDraft((e.target.value||"").replace(/\D+/g,""))}
                 onKeyDown={(e)=>{
                   if (e.key === "Enter") {
                     e.preventDefault(); e.stopPropagation();
-                    handleAdd();
+                    addAndFlip();
                   }
                 }}
                 onKeyUp={(e)=>{
                   if (e.key === "Enter") {
-                    requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true }));
+                    setTimeout(()=> { if (inputRef.current) { try { inputRef.current.focus({ preventScroll: true }); } catch {} } }, 0);
                   }
                 }}
                 className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600 no-focus-outline"
@@ -461,13 +489,13 @@ function App(){
                 type="button"
                 tabIndex="-1"
                 onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
-                onClick={handleAdd}
+                onClick={addAndFlip}
                 className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add ↦</button>
               <button
                 type="button"
                 tabIndex="-1"
                 onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
-                onClick={()=> { setActiveIdx(i => (i+1)%app.teams.length); requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true })); }}
+                onClick={()=> { setActiveIdx(i => (i+1)%app.teams.length); setTimeout(()=> inputRef.current && inputRef.current.focus({ preventScroll: true }), 0); }}
                 className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Switch team">↔</button>
             </div>
             <div className="absolute right-2 -bottom-5 text-[10px] text-slate-400 opacity-70">{APP_VERSION}</div>
