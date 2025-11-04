@@ -15,10 +15,10 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     body { background:#0f172a; color:#e2e8f0; }
+    .no-focus-outline:focus { outline: none; }
     input[type=number]::-webkit-outer-spin-button,
     input[type=number]::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
     input[type=number]{ -moz-appearance:textfield; }
-    .no-focus-outline:focus { outline: none; }
   </style>
 </head>
 <body class="bg-slate-900">
@@ -27,7 +27,7 @@
 
 <script type="text/babel" data-presets="react,env">
 const {useState,useEffect,useMemo,useRef,memo} = React;
-const APP_VERSION = "V1.76 (mobile alternate fix)";
+const APP_VERSION = "V1.77 (mobile flip fix + IME-safe)";
 const MAX_MEMBERS = 3;
 const uid = () => Math.random().toString(36).slice(2,10);
 const STORAGE_KEY = "pig-grid-v19";
@@ -248,43 +248,7 @@ function App(){
   const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
   const setTeamColor = (teamId, color)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, color} : t)}));
 
-  // Orders for tabbing (desktop only)
-  const nameOrder = useMemo(()=>{ const order=[]; for(const t of app.teams) for(const m of t.members) order.push({memberId:m.id, teamId:t.id}); return order; },[app.teams]);
-  const nameIndex = useMemo(()=>{ const m=new Map(); nameOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; },[nameOrder]);
-  const scoreOrder = useMemo(()=>{
-    const teams=app.teams; const maxRows=Math.max(0,...teams.map(t=>t.members.length)); const order=[];
-    for(let r=0;r<maxRows;r++) for(const t of teams){ const m=t.members[r]; if(m) order.push({memberId:m.id, teamId:t.id}); }
-    return order;
-  },[app.teams]);
-  const scoreIndex = useMemo(()=>{ const m=new Map(); scoreOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; },[scoreOrder]);
-
-  const nameRefs = useRef({}); const setNameRef = (id,el)=> (nameRefs.current[id]=el);
-  const scoreRefs = useRef({}); const setScoreRef = (id,el)=> (scoreRefs.current[id]=el);
-
-  // Color picker state (both views)
-  const [pickerTeamId, setPickerTeamId] = useState(null);
-  const pickerTeam = pickerTeamId ? app.teams.find(t => t.id === pickerTeamId) : null;
-
-  // Keyboard-aware bottom dock for mobile
-  function useKeyboardAwareBottom(ref){
-    useEffect(()=>{
-      const vv = window.visualViewport;
-      if (!vv || !ref.current) return;
-      const el = ref.current;
-      let raf = null;
-      const apply = () => {
-        const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-        el.style.bottom = kb + "px";
-        raf = null;
-      };
-      const onResize = () => { if (!raf) raf = requestAnimationFrame(apply); };
-      vv.addEventListener('resize', onResize);
-      apply();
-      return () => { vv.removeEventListener('resize', onResize); if (raf) cancelAnimationFrame(raf); };
-    }, [ref]);
-  }
-
-  // ----- Desktop layout (unchanged visuals from v1.62) -----
+  // Desktop UI
   const Desktop = () => (
     <div className="hidden md:block">
       <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
@@ -343,20 +307,10 @@ function App(){
                     onCommitName={(v)=>commitMemberName(m.id,v)}
                     onAddScore={(n)=>addScore(team.id,m.id,n)}
                     onUndo={()=>undoMember(team.id,m.id)}
-                    nameTab={100 + (nameIndex.get(m.id) ?? 0)}
-                    scoreTab={200 + (scoreIndex.get(m.id) ?? 0)}
-                    focusNextName={(shift)=>{
-                      const idx = nameIndex.get(m.id) ?? 0;
-                      const nextIdx = (idx + (shift?-1:1) + nameOrder.length) % nameOrder.length;
-                      const nextId = nameOrder[nextIdx].memberId;
-                      requestAnimationFrame(()=> nameRefs.current[nextId]?.focus());
-                    }}
-                    focusNextScore={(shift)=>{
-                      const idx = scoreIndex.get(m.id) ?? 0;
-                      const nextIdx = (idx + (shift?-1:1) + scoreOrder.length) % scoreOrder.length;
-                      const nextId = scoreOrder[nextIdx].memberId;
-                      requestAnimationFrame(()=> scoreRefs.current[nextId]?.focus());
-                    }}
+                    nameTab={100}
+                    scoreTab={200}
+                    focusNextName={()=>{}}
+                    focusNextScore={()=>{}}
                   />
                 ))}
               </div>
@@ -367,57 +321,55 @@ function App(){
     </div>
   );
 
-  // ----- Mobile layout (team-only scoring, SINGLE input, functional state updates) -----
+  // ----- Mobile (single input; IME-safe; flip after commit using ref) -----
   const Mobile = () => {
     const refDock = useRef(null);
-    useKeyboardAwareBottom(refDock);
+    useEffect(()=>{
+      const vv = window.visualViewport;
+      if (!vv || !refDock.current) return;
+      const el = refDock.current;
+      let raf=null;
+      const apply=()=>{ const kb=Math.max(0, window.innerHeight - vv.height - vv.offsetTop); el.style.bottom = kb + "px"; raf=null; };
+      const onRes=()=>{ if(!raf) raf=requestAnimationFrame(apply); };
+      vv.addEventListener('resize', onRes); apply();
+      return ()=> { vv.removeEventListener('resize', onRes); if(raf) cancelAnimationFrame(raf); };
+    },[]);
 
     const inpRef = useRef(null);
+    const bufferRef = useRef("");   // latest digits from onInput
     const [activeIdx, setActiveIdx] = useState(0);
 
     useEffect(()=>{ requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true })); },[]);
 
     const totalOf = (t) => sum(t.members.flatMap(m=>m.entries)) + sum(t.teamEntries||[]);
 
-    const commit = () => {
-      const el = inpRef.current;
-      if (!el) return false;
-      const raw = (el.value || "").trim();
-      if (!raw) return false;
-      const n = clampInt(raw);
-      const teamId = (window.__teamsCache || [])[activeIdx]?.id; // cache below
-      if (!teamId) return false;
+    const commitFromBuffer = () => {
+      const digits = bufferRef.current.trim();
+      if (!digits) return false;
+      const n = clampInt(digits);
+      const tId = app.teams[activeIdx]?.id;
+      if (!tId) return false;
       // snapshot + commit
       setApp(p => {
         const snap = JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
         const hist = [...p.history.slice(-49), snap];
-        const teams = p.teams.map(t => t.id === teamId ? { ...t, teamEntries: [...(t.teamEntries||[]), n] } : t);
+        const teams = p.teams.map(t => t.id === tId ? { ...t, teamEntries: [...(t.teamEntries||[]), n] } : t);
         return { ...p, teams, history: hist };
       });
-      // select all so next typing overwrites
-      requestAnimationFrame(()=>{
-        el.focus({ preventScroll: true });
-        try { el.setSelectionRange(0, el.value.length); } catch {}
-      });
+      // clear underlying input quickly but keep focus (avoid IME drop)
+      const el = inpRef.current;
+      if (el) { el.value = ""; }
+      bufferRef.current = "";
       return true;
     };
 
-    // keep a light cache of team ids to avoid stale closures
-    window.__teamsCache = app.teams.map(t=>({id:t.id}));
-
-    const handleEnterOrAdd = () => {
-      const ok = commit();
-      if (ok) {
-        // compute next index functionally to avoid stale captures
-        setActiveIdx(i => (i + 1) % app.teams.length);
-      }
-      // keep focus regardless
-      requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true }));
-    };
-
-    const switchTeam = () => {
-      setActiveIdx(i => (i + 1) % app.teams.length);
-      requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true }));
+    const handleAdd = () => {
+      // Let IME commit the latest key first, then read buffer (RAF)
+      requestAnimationFrame(()=>{
+        const ok = commitFromBuffer();
+        if (ok) setActiveIdx(i => (i+1) % app.teams.length);
+        requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true }));
+      });
     };
 
     return (
@@ -427,8 +379,15 @@ function App(){
           <div className="px-3 py-2 flex items-center justify-between text-slate-300">
             <div className="text-[12px]">Goal: First to 100 points wins!</div>
             <div className="flex items-center gap-2">
-              <button onClick={onUndo} disabled={!app.history.length} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs disabled:opacity-50">Undo</button>
-              <button onClick={onReset} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
+              <button onClick={()=> setApp(p=>{
+                if(!p.history.length) return p;
+                const last = p.history[p.history.length-1];
+                return { ...p, teams: last.teams, target: last.target, history: p.history.slice(0,-1) };
+              })} disabled={!app.history.length} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs disabled:opacity-50">Undo</button>
+              <button onClick={()=>{
+                if (!confirm("Reset scores (no archive)?")) return;
+                setApp(p => ({ ...p, teams: p.teams.map(t => ({ ...t, teamEntries: [], members: t.members.map(m => ({ ...m, entries: [] })) })) }));
+              }} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
             </div>
           </div>
           {/* Score tiles */}
@@ -445,8 +404,11 @@ function App(){
                 </div>
                 <div className="mt-1 flex items-center justify-center gap-2">
                   <button onClick={()=>{
-                    pushHistory();
-                    setApp(p=> ({ ...p, teams: p.teams.map(x => x.id===t.id ? {...x, teamEntries:(x.teamEntries||[]).slice(0,-1)} : x) }));
+                    setApp(p=>{
+                      const snap = JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
+                      const hist = [...p.history.slice(-49), snap];
+                      return { ...p, history: hist, teams: p.teams.map(x => x.id===t.id ? {...x, teamEntries:(x.teamEntries||[]).slice(0,-1)} : x) };
+                    });
                   }} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
                   <button onClick={()=>setPickerTeamId(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">🎨</button>
                 </div>
@@ -472,10 +434,20 @@ function App(){
                 autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
                 placeholder={`Add ${app.teams[activeIdx]?.name} score`}
                 defaultValue=""
+                onInput={(e)=>{
+                  const digits = (e.currentTarget.value || "").replace(/\D+/g,"");
+                  if (digits !== e.currentTarget.value) {
+                    const start = e.currentTarget.selectionStart;
+                    const end = e.currentTarget.selectionEnd;
+                    e.currentTarget.value = digits;
+                    try { e.currentTarget.setSelectionRange(start-1, end-1); } catch {}
+                  }
+                  bufferRef.current = digits;
+                }}
                 onKeyDown={(e)=>{
                   if (e.key === "Enter") {
                     e.preventDefault(); e.stopPropagation();
-                    handleEnterOrAdd();
+                    handleAdd();
                   }
                 }}
                 onKeyUp={(e)=>{
@@ -489,13 +461,13 @@ function App(){
                 type="button"
                 tabIndex="-1"
                 onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
-                onClick={handleEnterOrAdd}
+                onClick={handleAdd}
                 className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add ↦</button>
               <button
                 type="button"
                 tabIndex="-1"
                 onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
-                onClick={switchTeam}
+                onClick={()=> { setActiveIdx(i => (i+1)%app.teams.length); requestAnimationFrame(()=> inpRef.current?.focus({ preventScroll: true })); }}
                 className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Switch team">↔</button>
             </div>
             <div className="absolute right-2 -bottom-5 text-[10px] text-slate-400 opacity-70">{APP_VERSION}</div>
