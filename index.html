@@ -26,15 +26,16 @@
   <div id="portal-root"></div>
 
 <script type="text/babel" data-presets="env,react">
+// ---------- utils ----------
 const {useState,useEffect,useMemo,useRef,memo} = React;
-const APP_VERSION = "V1.78 (desktop stable + mobile flip fix)";
+const APP_VERSION = "V1.79 (mobile flip fix - stable component)";
 const MAX_MEMBERS = 3;
 const uid = () => Math.random().toString(36).slice(2,10);
 const STORAGE_KEY = "pig-grid-v19";
 const sum = (a)=>a.reduce((x,y)=>x+y,0);
 const clampInt = (n)=>{ const x = Math.floor(Number(n)); return Number.isFinite(x)?x:0; };
 
-// Simple runtime error banner so we don't get a blank screen
+// ---------- error banner (so we never see just a blank screen) ----------
 window.addEventListener("error", (e)=>{
   const pre = document.createElement("pre");
   pre.style.cssText = "position:fixed;left:8px;bottom:8px;right:8px;max-height:40vh;overflow:auto;background:#111827;color:#fca5a5;border:1px solid #374151;border-radius:12px;padding:8px;z-index:99999;font-size:12px;";
@@ -42,6 +43,7 @@ window.addEventListener("error", (e)=>{
   document.body.appendChild(pre);
 }, { once:true });
 
+// ---------- storage hook ----------
 function usePersistedState(initial){
   const [state,setState] = useState(()=>{
     try{
@@ -69,7 +71,7 @@ function usePersistedState(initial){
   return [state,setState];
 }
 
-// Portal
+// ---------- portal ----------
 function Portal({ children }){
   const elRef = useRef(null);
   if (!elRef.current) elRef.current = document.createElement("div");
@@ -81,7 +83,7 @@ function Portal({ children }){
   return ReactDOM.createPortal(children, elRef.current);
 }
 
-// Color wheel overlay (wheel + sliders). Live updates colors.
+// ---------- color wheel ----------
 const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
   const hostRef = useRef(null);
   const pickerRef = useRef(null);
@@ -142,7 +144,7 @@ const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
   );
 });
 
-// Input for team name with local draft
+// ---------- small pieces ----------
 const TeamNameInput = memo(function TeamNameInput({ value, onCommit }){
   const [draft, setDraft] = useState(value);
   useEffect(()=>{ setDraft(value); },[value]);
@@ -223,66 +225,27 @@ const MemberCard = memo(function MemberCard({
   );
 });
 
-function App(){
-  const [app,setApp] = usePersistedState({
-    target:100,
-    teams:[
-      { id:uid(), name:"Team A", color:"#38bdf8", teamEntries:[], members:[
-        {id:uid(), name:"Member 1", entries:[]},
-        {id:uid(), name:"Member 2", entries:[]},
-        {id:uid(), name:"Member 3", entries:[]},
-      ]},
-      { id:uid(), name:"Team B", color:"#f472b6", teamEntries:[], members:[
-        {id:uid(), name:"Member 1", entries:[]},
-        {id:uid(), name:"Member 2", entries:[]},
-        {id:uid(), name:"Member 3", entries:[]},
-      ]},
-    ],
-    history:[],
-  });
-
-  // History (Undo/Reset)
-  const snapshot = (p)=> JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
-  const pushHistory = ()=> setApp(p => ({ ...p, history: [...p.history.slice(-49), snapshot(p)] }));
-  const onUndo = ()=> setApp(p => {
-    if (!p.history.length) return p;
-    const last = p.history[p.history.length-1];
-    return { ...p, teams: last.teams, target: last.target, history: p.history.slice(0,-1) };
-  });
-  const onReset = ()=> {
-    if (!confirm("Reset scores (no archive)?")) return;
-    pushHistory();
-    setApp(p => ({ ...p, teams: p.teams.map(t => ({ ...t, teamEntries: [], members: t.members.map(m => ({ ...m, entries: [] })) })) }));
-  };
-
-  // Team/member mutations
-  const addMember = (teamId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.length>=MAX_MEMBERS ? t.members : [...t.members,{id:uid(),name:`Member ${t.members.length+1}`,entries:[]}]} : t)})); };
-  const removeMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.filter(m=>m.id!==memberId)} : t) })); };
-  const renameTeam = (teamId, name)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, name} : t)}));
-  const commitMemberName = (memberId, name)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> ({...t, members:t.members.map(m=> m.id===memberId ? {...m, name} : m)}))})); };
-  const addScore = (teamId, memberId, n)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:[...m.entries, n]} : m)} : t)})); };
-  const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
-  const setTeamColor = (teamId, color)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, color} : t)}));
-
-  // Orders for tabbing (desktop only)
-  const nameOrder = useMemo(()=>{ const order=[]; for(let ti=0; ti<app.teams.length; ti++){ const t=app.teams[ti]; for(let mi=0; mi<t.members.length; mi++){ const m=t.members[mi]; order.push({memberId:m.id, teamId:t.id}); } } return order; },[app.teams]);
-  const nameIndex = useMemo(()=>{ const m=new Map(); for(let i=0;i<nameOrder.length;i++){ m.set(nameOrder[i].memberId,i);} return m; },[nameOrder]);
+// ---------- Desktop (top-level component; stable identity) ----------
+const Desktop = memo(function Desktop({
+  app, onUndo, onReset,
+  addMember, removeMember, renameTeam, commitMemberName,
+  addScore, undoMember,
+  openColor
+}){
+  const nameOrder = useMemo(()=>{
+    const order=[]; for(const t of app.teams) for(const m of t.members) order.push({memberId:m.id, teamId:t.id}); return order;
+  },[app.teams]);
+  const nameIndex = useMemo(()=>{ const m=new Map(); nameOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; },[nameOrder]);
   const scoreOrder = useMemo(()=>{
     const teams=app.teams; const maxRows=Math.max(0,...teams.map(t=>t.members.length)); const order=[];
-    for(let r=0;r<maxRows;r++){ for(let ti=0;ti<teams.length;ti++){ const t=teams[ti]; const m=t.members[r]; if(m) order.push({memberId:m.id, teamId:t.id}); } }
+    for(let r=0;r<maxRows;r++) for(const t of teams){ const m=t.members[r]; if(m) order.push({memberId:m.id, teamId:t.id}); }
     return order;
   },[app.teams]);
-  const scoreIndex = useMemo(()=>{ const m=new Map(); for(let i=0;i<scoreOrder.length;i++){ m.set(scoreOrder[i].memberId,i);} return m; },[scoreOrder]);
-
+  const scoreIndex = useMemo(()=>{ const m=new Map(); scoreOrder.forEach((o,i)=>m.set(o.memberId,i)); return m; },[scoreOrder]);
   const nameRefs = useRef({}); const setNameRef = (id,el)=> (nameRefs.current[id]=el);
   const scoreRefs = useRef({}); const setScoreRef = (id,el)=> (scoreRefs.current[id]=el);
 
-  // Color picker state (both views)
-  const [pickerTeamId, setPickerTeamId] = useState(null);
-  const pickerTeam = pickerTeamId ? app.teams.find(t => t.id === pickerTeamId) : null;
-
-  // ----- Desktop layout (kept consistent with your golden build) -----
-  const Desktop = () => (
+  return (
     <div className="hidden md:block">
       <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
         <div className="justify-self-start"><h1 className="text-2xl md:text-3xl font-bold tracking-tight">Pig Scorekeeper</h1></div>
@@ -307,9 +270,9 @@ function App(){
                 <div className="flex items-center justify-between gap-2 relative">
                   <div className="flex-1" />
                   <div className="flex items-center gap-3 relative">
-                    <button onClick={()=>setPickerTeamId(team.id)} className="w-7 h-7 md:w-8 md:h-8 rounded-full border border-slate-700 shrink-0" style={{ background: team.color }} title="Pick team color"></button>
+                    <button onClick={()=>openColor(team.id)} className="w-7 h-7 md:w-8 md:h-8 rounded-full border border-slate-700 shrink-0" style={{ background: team.color }} title="Pick team color"></button>
                     <div className="flex flex-col items-center gap-1">
-                      <TeamNameInput value={team.name} onCommit={(v)=> { pushHistory(); renameTeam(team.id, v); }} />
+                      <TeamNameInput value={team.name} onCommit={(v)=> renameTeam(team.id, v)} />
                       <div className="text-xs font-medium" style={{ color: team.color }}>Team</div>
                     </div>
                   </div>
@@ -340,19 +303,19 @@ function App(){
                     onCommitName={(v)=>commitMemberName(m.id,v)}
                     onAddScore={(n)=>addScore(team.id,m.id,n)}
                     onUndo={()=>undoMember(team.id,m.id)}
-                    nameTab={100 + (nameIndex.get(m.id) || 0)}
-                    scoreTab={200 + (scoreIndex.get(m.id) || 0)}
+                    nameTab={100 + (nameIndex.get(m.id) ?? 0)}
+                    scoreTab={200 + (scoreIndex.get(m.id) ?? 0)}
                     focusNextName={(shift)=>{
-                      const idx = nameIndex.get(m.id) || 0;
+                      const idx = nameIndex.get(m.id) ?? 0;
                       const nextIdx = (idx + (shift?-1:1) + nameOrder.length) % nameOrder.length;
                       const nextId = nameOrder[nextIdx].memberId;
-                      setTimeout(()=> { const el = nameRefs.current[nextId]; if (el) el.focus(); }, 0);
+                      requestAnimationFrame(()=> nameRefs.current[nextId]?.focus());
                     }}
                     focusNextScore={(shift)=>{
-                      const idx = scoreIndex.get(m.id) || 0;
+                      const idx = scoreIndex.get(m.id) ?? 0;
                       const nextIdx = (idx + (shift?-1:1) + scoreOrder.length) % scoreOrder.length;
                       const nextId = scoreOrder[nextIdx].memberId;
-                      setTimeout(()=> { const el = scoreRefs.current[nextId]; if (el) el.focus(); }, 0);
+                      requestAnimationFrame(()=> scoreRefs.current[nextId]?.focus());
                     }}
                   />
                 ))}
@@ -363,162 +326,227 @@ function App(){
       </div>
     </div>
   );
+});
 
-  // ----- Mobile layout (single input; controlled; robust flip) -----
-  const Mobile = () => {
-    const refDock = useRef(null);
-    useEffect(()=>{
-      const vv = window.visualViewport;
-      if (!vv || !refDock.current) return;
-      const el = refDock.current;
-      let raf=null;
-      const apply=()=>{ const kb=Math.max(0, window.innerHeight - vv.height - vv.offsetTop); el.style.bottom = kb + "px"; raf=null; };
-      const onRes=()=>{ if(!raf) raf=requestAnimationFrame(apply); };
-      vv.addEventListener('resize', onRes); apply();
-      return ()=> { vv.removeEventListener('resize', onRes); if(raf) cancelAnimationFrame(raf); };
-    },[]);
+// ---------- Mobile (top-level component; stable identity) ----------
+const Mobile = memo(function Mobile({
+  app, onUndo, onReset, openColor, addTeamScore, undoLastTeam
+}){
+  // keep dock above keyboard
+  const refDock = useRef(null);
+  useEffect(()=>{
+    const vv = window.visualViewport;
+    if (!vv || !refDock.current) return;
+    const el = refDock.current;
+    let raf=null;
+    const apply=()=>{ const kb=Math.max(0, window.innerHeight - vv.height - vv.offsetTop); el.style.bottom = kb + "px"; raf=null; };
+    const onRes=()=>{ if(!raf) raf=requestAnimationFrame(apply); };
+    vv.addEventListener('resize', onRes); apply();
+    return ()=> { vv.removeEventListener('resize', onRes); if(raf) cancelAnimationFrame(raf); };
+  },[]);
 
-    const inputRef = useRef(null);
-    const [activeIdx, setActiveIdx] = useState(0);
-    const [draft, setDraft] = useState("");
+  // single always-focused input
+  const inputRef = useRef(null);
+  const bufRef = useRef(""); // latest digits
+  const [activeIdx, setActiveIdx] = useState(0);
 
-    useEffect(()=>{
-      // keep focus on mount and when team flips
-      setTimeout(()=> { if (inputRef.current) { try { inputRef.current.focus({ preventScroll: true }); } catch {} } }, 0);
-    }, [activeIdx]);
+  useEffect(()=>{ requestAnimationFrame(()=> inputRef.current?.focus({ preventScroll: true })); },[]);
+  useEffect(()=>{
+    // keep focus after flip
+    requestAnimationFrame(()=> inputRef.current?.focus({ preventScroll: true }));
+  }, [activeIdx]);
 
-    const totalOf = (t) => sum(t.members.flatMap(m=>m.entries)) + sum(t.teamEntries||[]);
+  const totalOf = (t) => sum(t.members.flatMap(m=>m.entries)) + sum(t.teamEntries||[]);
 
-    const commit = () => {
-      const raw = (draft||"").trim();
-      if (!raw) return false;
-      const n = clampInt(raw);
-      const teamId = app.teams[activeIdx] ? app.teams[activeIdx].id : null;
-      if (!teamId) return false;
-      // snapshot + commit
-      setApp(p => {
-        const snap = JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
-        const hist = [...p.history.slice(-49), snap];
-        const teams = p.teams.map(t => t.id === teamId ? { ...t, teamEntries: [...(t.teamEntries||[]), n] } : t);
-        return { ...p, teams, history: hist };
-      });
-      return true;
-    };
+  const commitFromBuffer = () => {
+    const digits = bufRef.current.trim();
+    if (!digits) return false;
+    const n = clampInt(digits);
+    const t = app.teams[activeIdx];
+    if (!t) return false;
+    addTeamScore(t.id, n);
+    // clear field but keep focus
+    if (inputRef.current) inputRef.current.value = "";
+    bufRef.current = "";
+    return true;
+  };
 
-    const addAndFlip = () => {
-      // Keep focus; prevent IME from closing
-      const el = inputRef.current;
-      if (el) { try { el.focus({ preventScroll: true }); } catch {} }
-      const ok = commit();
-      if (ok) {
-        setDraft("");
-        // Flip after commit using functional update
-        setActiveIdx(i => (i+1) % app.teams.length);
-      }
-      // Re-assert focus
-      setTimeout(()=>{ if (inputRef.current) { try { inputRef.current.focus({ preventScroll: true }); } catch {} } }, 0);
-    };
+  const handleAdd = () => {
+    // wait one frame so IME commits last key, then read & flip
+    requestAnimationFrame(()=>{
+      const ok = commitFromBuffer();
+      if (ok) setActiveIdx(i => (i+1) % app.teams.length);
+      requestAnimationFrame(()=> inputRef.current?.focus({ preventScroll: true }));
+    });
+  };
 
-    return (
-      <div className="md:hidden">
-        {/* Top bar */}
-        <div className="fixed top-0 left-0 right-0 z-40 border-b border-slate-700 bg-slate-900/95 backdrop-blur">
-          <div className="px-3 py-2 flex items-center justify-between text-slate-300">
-            <div className="text-[12px]">Goal: First to 100 points wins!</div>
-            <div className="flex items-center gap-2">
-              <button onClick={onUndo} disabled={!app.history.length} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs disabled:opacity-50">Undo</button>
-              <button onClick={onReset} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
-            </div>
-          </div>
-          {/* Score tiles */}
-          <div className="px-3 pb-2 grid grid-cols-2 gap-3">
-            {app.teams.map((t)=> (
-              <div key={t.id} className="p-2 rounded-2xl border border-slate-700 bg-slate-800" style={{ boxShadow: `0 0 0 1px ${t.color}` }}>
-                <div className="flex items-center justify-between">
-                  <button onClick={()=>setPickerTeamId(t.id)} className="w-6 h-6 rounded-full border border-slate-700" style={{ background: t.color }} title="Pick team color"></button>
-                  <div className="text-base text-slate-300">to 100: <span className="font-semibold" style={{ color: t.color }}>{Math.max(0, 100 - totalOf(t))}</span></div>
-                </div>
-                <div className="mt-1 text-center">
-                  <div className="text-[10px] uppercase tracking-wide opacity-70">{t.name}</div>
-                  <div className="text-7xl font-black text-white tabular-nums leading-none">{totalOf(t)}</div>
-                </div>
-                <div className="mt-1 flex items-center justify-center gap-2">
-                  <button onClick={()=>{
-                    pushHistory();
-                    setApp(p=> ({ ...p, teams: p.teams.map(x => x.id===t.id ? {...x, teamEntries:(x.teamEntries||[]).slice(0,-1)} : x) }));
-                  }} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
-                  <button onClick={()=>setPickerTeamId(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">🎨</button>
-                </div>
-              </div>
-            ))}
+  return (
+    <div className="md:hidden">
+      {/* Top bar */}
+      <div className="fixed top-0 left-0 right-0 z-40 border-b border-slate-700 bg-slate-900/95 backdrop-blur">
+        <div className="px-3 py-2 flex items-center justify-between text-slate-300">
+          <div className="text-[12px]">Goal: First to 100 points wins!</div>
+          <div className="flex items-center gap-2">
+            <button onClick={onUndo} disabled={!app.history.length} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs disabled:opacity-50">Undo</button>
+            <button onClick={onReset} className="px-2 py-1 rounded-md border border-slate-700 hover:bg-slate-700 text-xs">Reset</button>
           </div>
         </div>
-
-        {/* Spacer under top tiles */}
-        <div className="pt-[190px]"></div>
-
-        {/* Bottom scoring dock (single input) */}
-        <div ref={refDock} className="fixed left-0 right-0 z-50 border-t border-slate-700 bg-slate-900/95 backdrop-blur" style={{ bottom: 0 }}>
-          <div className="max-w-7xl mx-auto px-3 py-3 relative">
-            <div className="flex items-center gap-2">
-              <div className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 text-xs whitespace-nowrap" style={{ color: app.teams[activeIdx] ? app.teams[activeIdx].color : "#94a3b8" }}>
-                Active: <span className="font-semibold">{app.teams[activeIdx] ? app.teams[activeIdx].name : ""}</span>
+        {/* Score tiles */}
+        <div className="px-3 pb-2 grid grid-cols-2 gap-3">
+          {app.teams.map((t)=> (
+            <div key={t.id} className="p-2 rounded-2xl border border-slate-700 bg-slate-800" style={{ boxShadow: `0 0 0 1px ${t.color}` }}>
+              <div className="flex items-center justify-between">
+                <button onClick={()=>openColor(t.id)} className="w-6 h-6 rounded-full border border-slate-700" style={{ background: t.color }} title="Pick team color"></button>
+                <div className="text-base text-slate-300">to 100: <span className="font-semibold" style={{ color: t.color }}>{Math.max(0, 100 - totalOf(t))}</span></div>
               </div>
-              <input
-                ref={inputRef}
-                type="tel" inputMode="numeric" pattern="[0-9]*"
-                enterKeyHint="next"
-                autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
-                placeholder={app.teams[activeIdx] ? ("Add " + app.teams[activeIdx].name + " score") : "Add score"}
-                value={draft}
-                onChange={(e)=> setDraft((e.target.value||"").replace(/\D+/g,""))}
-                onKeyDown={(e)=>{
-                  if (e.key === "Enter") {
-                    e.preventDefault(); e.stopPropagation();
-                    addAndFlip();
-                  }
-                }}
-                onKeyUp={(e)=>{
-                  if (e.key === "Enter") {
-                    setTimeout(()=> { if (inputRef.current) { try { inputRef.current.focus({ preventScroll: true }); } catch {} } }, 0);
-                  }
-                }}
-                className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600 no-focus-outline"
-              />
-              <button
-                type="button"
-                tabIndex="-1"
-                onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
-                onClick={addAndFlip}
-                className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add ↦</button>
-              <button
-                type="button"
-                tabIndex="-1"
-                onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
-                onClick={()=> { setActiveIdx(i => (i+1)%app.teams.length); setTimeout(()=> inputRef.current && inputRef.current.focus({ preventScroll: true }), 0); }}
-                className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Switch team">↔</button>
+              <div className="mt-1 text-center">
+                <div className="text-[10px] uppercase tracking-wide opacity-70">{t.name}</div>
+                <div className="text-7xl font-black text-white tabular-nums leading-none">{totalOf(t)}</div>
+              </div>
+              <div className="mt-1 flex items-center justify-center gap-2">
+                <button onClick={()=>undoLastTeam(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
+                <button onClick={()=>openColor(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">🎨</button>
+              </div>
             </div>
-            <div className="absolute right-2 -bottom-5 text-[10px] text-slate-400 opacity-70">{APP_VERSION}</div>
-          </div>
+          ))}
         </div>
       </div>
-    );
+
+      {/* Spacer under top tiles */}
+      <div className="pt-[190px]"></div>
+
+      {/* Bottom dock */}
+      <div ref={refDock} className="fixed left-0 right-0 z-50 border-t border-slate-700 bg-slate-900/95 backdrop-blur" style={{ bottom: 0 }}>
+        <div className="max-w-7xl mx-auto px-3 py-3 relative">
+          <div className="flex items-center gap-2">
+            <div className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 text-xs whitespace-nowrap" style={{ color: app.teams[activeIdx]?.color || "#94a3b8" }}>
+              Active: <span className="font-semibold">{app.teams[activeIdx]?.name || ""}</span>
+            </div>
+            <input
+              ref={inputRef}
+              type="tel" inputMode="numeric" pattern="[0-9]*"
+              enterKeyHint="next"
+              autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
+              placeholder={app.teams[activeIdx] ? ("Add " + app.teams[activeIdx].name + " score") : "Add score"}
+              defaultValue=""
+              onInput={(e)=>{
+                const digits = (e.currentTarget.value || "").replace(/\D+/g,"");
+                if (digits !== e.currentTarget.value) {
+                  const start = e.currentTarget.selectionStart;
+                  const end = e.currentTarget.selectionEnd;
+                  e.currentTarget.value = digits;
+                  try { e.currentTarget.setSelectionRange(start-1, end-1); } catch {}
+                }
+                bufRef.current = digits;
+              }}
+              onKeyDown={(e)=>{
+                if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); handleAdd(); }
+              }}
+              onKeyUp={(e)=>{
+                if (e.key === "Enter") requestAnimationFrame(()=> inputRef.current?.focus({ preventScroll: true }));
+              }}
+              className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600 no-focus-outline"
+            />
+            <button
+              type="button"
+              tabIndex="-1"
+              onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
+              onClick={handleAdd}
+              className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add ↦</button>
+            <button
+              type="button"
+              tabIndex="-1"
+              onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
+              onClick={()=> { setActiveIdx(i => (i+1)%app.teams.length); requestAnimationFrame(()=> inputRef.current?.focus({ preventScroll: true })); }}
+              className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Switch team">↔</button>
+          </div>
+          <div className="absolute right-2 -bottom-5 text-[10px] text-slate-400 opacity-70">{APP_VERSION}</div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// ---------- App (parent) ----------
+function App(){
+  const [app,setApp] = usePersistedState({
+    target:100,
+    teams:[
+      { id:uid(), name:"Team A", color:"#38bdf8", teamEntries:[], members:[
+        {id:uid(), name:"Member 1", entries:[]},
+        {id:uid(), name:"Member 2", entries:[]},
+        {id:uid(), name:"Member 3", entries:[]},
+      ]},
+      { id:uid(), name:"Team B", color:"#f472b6", teamEntries:[], members:[
+        {id:uid(), name:"Member 1", entries:[]},
+        {id:uid(), name:"Member 2", entries:[]},
+        {id:uid(), name:"Member 3", entries:[]},
+      ]},
+    ],
+    history:[],
+  });
+
+  // history helpers
+  const snapshot = (p)=> JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
+  const pushHistory = ()=> setApp(p => ({ ...p, history: [...p.history.slice(-49), snapshot(p)] }));
+  const onUndo = ()=> setApp(p => {
+    if (!p.history.length) return p;
+    const last = p.history[p.history.length-1];
+    return { ...p, teams: last.teams, target: last.target, history: p.history.slice(0,-1) };
+  });
+  const onReset = ()=> {
+    if (!confirm("Reset scores (no archive)?")) return;
+    pushHistory();
+    setApp(p => ({ ...p, teams: p.teams.map(t => ({ ...t, teamEntries: [], members: t.members.map(m => ({ ...m, entries: [] })) })) }));
   };
+
+  // team/member mutations
+  const addMember = (teamId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.length>=MAX_MEMBERS ? t.members : [...t.members,{id:uid(),name:`Member ${t.members.length+1}`,entries:[]}]} : t)})); };
+  const removeMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.filter(m=>m.id!==memberId)} : t) })); };
+  const renameTeam = (teamId, name)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, name} : t)})); };
+  const commitMemberName = (memberId, name)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> ({...t, members:t.members.map(m=> m.id===memberId ? {...m, name} : m)}))})); };
+  const addScore = (teamId, memberId, n)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:[...m.entries, n]} : m)} : t)})); };
+  const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
+
+  const addTeamScore = (teamId, n)=> { pushHistory(); setApp(p=> ({ ...p, teams: p.teams.map(t => t.id===teamId ? { ...t, teamEntries:[...(t.teamEntries||[]), n] } : t) })); };
+  const undoLastTeam = (teamId)=> { pushHistory(); setApp(p=> ({ ...p, teams: p.teams.map(t => t.id===teamId ? { ...t, teamEntries:(t.teamEntries||[]).slice(0,-1) } : t) })); };
+
+  // color picker
+  const [pickerTeamId, setPickerTeamId] = useState(null);
+  const pickerTeam = pickerTeamId ? app.teams.find(t => t.id === pickerTeamId) : null;
 
   return (
     <div className="min-h-screen w-full text-slate-100">
       <div className="max-w-7xl mx-auto p-3 md:p-6">
         {/* Desktop */}
-        <Desktop />
+        <Desktop
+          app={app}
+          onUndo={onUndo}
+          onReset={onReset}
+          addMember={addMember}
+          removeMember={removeMember}
+          renameTeam={renameTeam}
+          commitMemberName={commitMemberName}
+          addScore={addScore}
+          undoMember={undoMember}
+          openColor={setPickerTeamId}
+        />
         {/* Mobile */}
-        <Mobile />
+        <Mobile
+          app={app}
+          onUndo={onUndo}
+          onReset={onReset}
+          openColor={setPickerTeamId}
+          addTeamScore={addTeamScore}
+          undoLastTeam={undoLastTeam}
+        />
       </div>
       <div className="fixed right-3 bottom-3 z-40 text-xs text-slate-400 opacity-70 select-none">{APP_VERSION}</div>
 
       {pickerTeam && (
         <WheelPicker
           initial={pickerTeam.color}
-          onInput={(hex)=> setTeamColor(pickerTeam.id, hex)}  // live update
+          onInput={(hex)=> setApp(p=> ({ ...p, teams: p.teams.map(t=> t.id===pickerTeam.id ? { ...t, color: hex } : t) }))}
           onClose={()=> setPickerTeamId(null)}
         />
       )}
