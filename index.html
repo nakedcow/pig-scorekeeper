@@ -28,10 +28,10 @@
 <script type="text/babel" data-presets="env,react">
 // ---------- utils ----------
 const {useState,useEffect,useMemo,useRef,memo} = React;
-const APP_VERSION = "V1.79 (mobile flip fix - stable component)";
+const APP_VERSION = "V2.01 (winner animation)";
 const MAX_MEMBERS = 3;
 const uid = () => Math.random().toString(36).slice(2,10);
-const STORAGE_KEY = "pig-grid-v19";
+const STORAGE_KEY = "pig-grid-v20"; // bump storage key for 2.x
 const sum = (a)=>a.reduce((x,y)=>x+y,0);
 const clampInt = (n)=>{ const x = Math.floor(Number(n)); return Number.isFinite(x)?x:0; };
 
@@ -57,6 +57,7 @@ function usePersistedState(initial){
           teamEntries: Array.isArray(t.teamEntries)?t.teamEntries:[],
           members: (t.members||[]).map(m=>({ id:m.id||uid(), name:m.name||"Member", entries:Array.isArray(m.entries)?m.entries:[] }))
         }));
+        loaded.winnerTeamId = loaded.winnerTeamId ?? null;
         loaded.history = []; // don't hydrate history
         return loaded;
       }
@@ -144,6 +145,102 @@ const WheelPicker = memo(function WheelPicker({ initial, onInput, onClose }){
   );
 });
 
+// ---------- Winner Overlay with Confetti ----------
+const WinnerOverlay = memo(function WinnerOverlay({ team, onClose, onReset }){
+  const canvasRef = useRef(null);
+  const animRef = useRef(0);
+  const piecesRef = useRef([]);
+  const startRef = useRef(null);
+  const [visible, setVisible] = useState(true);
+
+  useEffect(()=>{
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const DPR = Math.min(2, window.devicePixelRatio || 1);
+    const resize = ()=>{
+      canvas.width = Math.floor(window.innerWidth * DPR);
+      canvas.height = Math.floor(window.innerHeight * DPR);
+      canvas.style.width = window.innerWidth + "px";
+      canvas.style.height = window.innerHeight + "px";
+    };
+    resize();
+    window.addEventListener("resize", resize);
+    // init confetti
+    const colors = [team?.color || "#22c55e", "#fde047", "#60a5fa", "#f87171", "#a78bfa"];
+    const pieces = [];
+    for(let i=0;i<180;i++){
+      pieces.push({
+        x: Math.random()*canvas.width,
+        y: -Math.random()*canvas.height*0.5,
+        r: 3 + Math.random()*6,
+        dx: -2 + Math.random()*4,
+        dy: 2 + Math.random()*3,
+        tilt: Math.random()*Math.PI*2,
+        dtilt: -0.1 + Math.random()*0.2,
+        color: colors[i%colors.length],
+      });
+    }
+    piecesRef.current = pieces;
+    startRef.current = performance.now();
+    const tick = (t)=>{
+      const ctx = canvas.getContext("2d");
+      const elapsed = t - startRef.current;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      for(const p of piecesRef.current){
+        p.tilt += p.dtilt;
+        p.x += p.dx;
+        p.y += p.dy;
+        p.dy += 0.02; // gravity
+        // wrap sideways
+        if (p.x < -20) p.x = canvas.width + 20;
+        if (p.x > canvas.width + 20) p.x = -20;
+        // draw
+        ctx.save();
+        ctx.fillStyle = p.color;
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.tilt);
+        ctx.fillRect(-p.r, -p.r, p.r*2, p.r*2);
+        ctx.restore();
+      }
+      animRef.current = requestAnimationFrame(tick);
+      if (elapsed > 6000) { cancelAnimationFrame(animRef.current); }
+    };
+    animRef.current = requestAnimationFrame(tick);
+    return ()=>{
+      cancelAnimationFrame(animRef.current);
+      window.removeEventListener("resize", resize);
+    };
+  }, [team?.color]);
+
+  useEffect(()=>{
+    const t = setTimeout(()=> setVisible(false), 6500);
+    return ()=> clearTimeout(t);
+  },[]);
+
+  if (!visible) return null;
+
+  return (
+    <Portal>
+      <div className="fixed inset-0 z-[100]">
+        <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none"></canvas>
+        <div className="absolute inset-0 bg-black/40"></div>
+        <div className="relative h-full w-full flex items-center justify-center p-4">
+          <div className="text-center p-6 rounded-3xl border border-slate-700 shadow-2xl" style={{ background:"rgba(2,6,23,0.85)", boxShadow:`0 0 0 2px ${team?.color||"#22c55e"} inset` }}>
+            <div className="text-6xl md:text-7xl mb-2">🏆</div>
+            <div className="text-xl md:text-2xl uppercase tracking-widest text-slate-300">Winner</div>
+            <div className="text-3xl md:text-5xl font-black tabular-nums" style={{ color: team?.color||"#22c55e" }}>{team?.name || "Team"}</div>
+            <div className="mt-4 flex items-center justify-center gap-3">
+              <button onClick={onReset} className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Reset</button>
+              <button onClick={onClose} className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Close</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Portal>
+  );
+});
+
 // ---------- small pieces ----------
 const TeamNameInput = memo(function TeamNameInput({ value, onCommit }){
   const [draft, setDraft] = useState(value);
@@ -164,7 +261,8 @@ const MemberCard = memo(function MemberCard({
   setNameRef, setScoreRef,
   onRemove, onCommitName, onAddScore, onUndo,
   nameTab, scoreTab,
-  focusNextName, focusNextScore
+  focusNextName, focusNextScore,
+  disabled=false
 }){
   const [nameDraft, setNameDraft] = useState(member.name);
   useEffect(()=>{ setNameDraft(member.name); },[member.name]);
@@ -180,12 +278,13 @@ const MemberCard = memo(function MemberCard({
 
   return (
     <div className="relative p-2 md:p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center" style={{ boxShadow:`0 0 0 1px ${teamColor}` }}>
-      <button onClick={onRemove} className="absolute top-1 right-1 md:top-2 md:right-2 rounded-md border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-[10px] md:text-xs px-1.5 py-0.5" title="Remove member">×</button>
+      <button onClick={onRemove} disabled={disabled} className="absolute top-1 right-1 md:top-2 md:right-2 rounded-md border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 text-[10px] md:text-xs px-1.5 py-0.5" title="Remove member">×</button>
       <div className="flex items-center justify-center gap-2 mb-1 md:mb-2">
         <input
           ref={(el)=> setNameRef(member.id, el)}
           tabIndex={nameTab}
           value={nameDraft}
+          disabled={disabled}
           onFocus={(e)=> e.target.select()}
           onChange={(e)=> setNameDraft(e.target.value)}
           onKeyDown={(e)=>{
@@ -193,7 +292,7 @@ const MemberCard = memo(function MemberCard({
             if(e.key==="Tab"){ e.preventDefault(); commitName(); focusNextName(e.shiftKey); }
           }}
           onBlur={commitName}
-          className="font-bold text-xl md:text-2xl px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100 w-3/4"
+          className="font-bold text-xl md:text-2xl px-1 py-1 bg-transparent text-center outline-none border-b-2 border-slate-600 hover:border-slate-500 focus:border-emerald-500 text-slate-100 w-3/4 disabled:opacity-60"
         />
       </div>
       <div className="text-[10px] md:text-xs uppercase tracking-wide opacity-70">Subtotal</div>
@@ -210,15 +309,16 @@ const MemberCard = memo(function MemberCard({
             tabIndex={scoreTab}
             type="text" inputMode="numeric" pattern="[0-9]*"
             value={scoreDraft}
+            disabled={disabled}
             onChange={(e)=> setScoreDraft((e.target.value||"").replace(/\D+/g,""))}
             onKeyDown={(e)=>{
               if(e.key==="Enter"){ e.preventDefault(); commitScore(); }
               else if(e.key==="Tab"){ e.preventDefault(); commitScore(); focusNextScore(e.shiftKey); }
             }}
-            className="flex-1 min-w-0 h-12 md:h-10 text-lg md:text-base px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600"
+            className="flex-1 min-w-0 h-12 md:h-10 text-lg md:text-base px-3 py-2 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-600 disabled:opacity-60"
             placeholder="score"
           />
-          <button onClick={onUndo} className="w-10 h-10 grid place-items-center rounded-2xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 text-base" title="Undo last" aria-label="Undo last">↶</button>
+          <button onClick={onUndo} disabled={disabled} className="w-10 h-10 grid place-items-center rounded-2xl border border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-50 text-base" title="Undo last" aria-label="Undo last">↶</button>
         </div>
       </div>
     </div>
@@ -245,6 +345,8 @@ const Desktop = memo(function Desktop({
   const nameRefs = useRef({}); const setNameRef = (id,el)=> (nameRefs.current[id]=el);
   const scoreRefs = useRef({}); const setScoreRef = (id,el)=> (scoreRefs.current[id]=el);
 
+  const teamTotal = (team)=> sum(team.members.flatMap(m=>m.entries)) + sum(team.teamEntries||[]);
+
   return (
     <div className="hidden md:block">
       <header className="grid grid-cols-3 items-center mb-4 md:mb-6">
@@ -263,9 +365,10 @@ const Desktop = memo(function Desktop({
         {app.teams.map(team => {
           const members = team.members;
           const cols = Math.max(1, members.length);
-          const total = sum(members.flatMap(m=>m.entries)) + sum(team.teamEntries||[]);
+          const total = teamTotal(team);
+          const isWinner = app.winnerTeamId === team.id;
           return (
-            <div key={team.id} className="p-3 md:p-4 rounded-2xl shadow border border-slate-700 bg-slate-800" style={{ boxShadow:`0 0 0 1px ${team.color}` }}>
+            <div key={team.id} className={"p-3 md:p-4 rounded-2xl shadow border bg-slate-800 " + (isWinner ? "ring-4 ring-yellow-400" : "border-slate-700")} style={{ boxShadow:`0 0 0 1px ${team.color}` }}>
               <div className="mb-2 md:mb-3">
                 <div className="flex items-center justify-between gap-2 relative">
                   <div className="flex-1" />
@@ -273,11 +376,10 @@ const Desktop = memo(function Desktop({
                     <button onClick={()=>openColor(team.id)} className="w-7 h-7 md:w-8 md:h-8 rounded-full border border-slate-700 shrink-0" style={{ background: team.color }} title="Pick team color"></button>
                     <div className="flex flex-col items-center gap-1">
                       <TeamNameInput value={team.name} onCommit={(v)=> renameTeam(team.id, v)} />
-                      <div className="text-xs font-medium" style={{ color: team.color }}>Team</div>
+                      <div className="text-xs font-medium" style={{ color: team.color }}>{isWinner ? "🏆 Winner" : "Team"}</div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 text-sm">
-                    <button onClick={()=>addMember(team.id)} disabled={members.length>=MAX_MEMBERS} className="px-3 md:px-4 py-2 rounded-2xl bg-emerald-600 text-white hover:bg-emerald-500 h-10 md:h-10 text-sm md:text-base disabled:opacity-50 whitespace-nowrap">Add member</button>
                     <span className="text-xs uppercase tracking-wide opacity-70">{members.length}/{MAX_MEMBERS}</span>
                   </div>
                 </div>
@@ -285,7 +387,7 @@ const Desktop = memo(function Desktop({
 
               <div className="p-3 rounded-2xl shadow border border-slate-700 bg-slate-800 text-center min-h-[200px]" style={{ boxShadow:`0 0 0 1px ${team.color}` }}>
                 <div className="text-xs md:text-sm uppercase tracking-wide opacity-70">Team total</div>
-                <div className="text-8xl font-black tabular-nums text-white leading-none">{total}</div>
+                <div className={"tabular-nums text-white leading-none " + (isWinner ? "text-9xl animate-pulse" : "text-8xl font-black")}>{total}</div>
                 <div className="inline-block px-2 py-1 rounded-lg text-sm md:text-base mt-2" style={{ background:'rgba(255,255,255,0.08)', color:team.color }}>
                   {Math.max(0,100-total)} to 100
                 </div>
@@ -317,6 +419,7 @@ const Desktop = memo(function Desktop({
                       const nextId = scoreOrder[nextIdx].memberId;
                       requestAnimationFrame(()=> scoreRefs.current[nextId]?.focus());
                     }}
+                    disabled={!!app.winnerTeamId}
                   />
                 ))}
               </div>
@@ -359,6 +462,7 @@ const Mobile = memo(function Mobile({
   const totalOf = (t) => sum(t.members.flatMap(m=>m.entries)) + sum(t.teamEntries||[]);
 
   const commitFromBuffer = () => {
+    if (app.winnerTeamId) return false; // lock after win
     const digits = bufRef.current.trim();
     if (!digits) return false;
     const n = clampInt(digits);
@@ -393,22 +497,26 @@ const Mobile = memo(function Mobile({
         </div>
         {/* Score tiles */}
         <div className="px-3 pb-2 grid grid-cols-2 gap-3">
-          {app.teams.map((t)=> (
-            <div key={t.id} className="p-2 rounded-2xl border border-slate-700 bg-slate-800" style={{ boxShadow: `0 0 0 1px ${t.color}` }}>
-              <div className="flex items-center justify-between">
-                <button onClick={()=>openColor(t.id)} className="w-6 h-6 rounded-full border border-slate-700" style={{ background: t.color }} title="Pick team color"></button>
-                <div className="text-base text-slate-300">to 100: <span className="font-semibold" style={{ color: t.color }}>{Math.max(0, 100 - totalOf(t))}</span></div>
+          {app.teams.map((t)=> {
+            const total = totalOf(t);
+            const isWinner = app.winnerTeamId === t.id;
+            return (
+              <div key={t.id} className={"p-2 rounded-2xl border bg-slate-800 " + (isWinner ? "ring-4 ring-yellow-400" : "border-slate-700")} style={{ boxShadow: `0 0 0 1px ${t.color}` }}>
+                <div className="flex items-center justify-between">
+                  <button onClick={()=>openColor(t.id)} className="w-6 h-6 rounded-full border border-slate-700" style={{ background: t.color }} title="Pick team color"></button>
+                  <div className="text-base text-slate-300">{isWinner ? "🏆 Winner" : "to 100:"} <span className="font-semibold" style={{ color: t.color }}>{isWinner ? "" : Math.max(0, 100 - total)}</span></div>
+                </div>
+                <div className="mt-1 text-center">
+                  <div className="text-[10px] uppercase tracking-wide opacity-70">{t.name}</div>
+                  <div className={"tabular-nums text-white leading-none " + (isWinner ? "text-8xl animate-pulse" : "text-7xl font-black")}>{total}</div>
+                </div>
+                <div className="mt-1 flex items-center justify-center gap-2">
+                  <button onClick={()=>undoLastTeam(t.id)} disabled={!!app.winnerTeamId} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs disabled:opacity-50">↶ Undo</button>
+                  <button onClick={()=>openColor(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">🎨</button>
+                </div>
               </div>
-              <div className="mt-1 text-center">
-                <div className="text-[10px] uppercase tracking-wide opacity-70">{t.name}</div>
-                <div className="text-7xl font-black text-white tabular-nums leading-none">{totalOf(t)}</div>
-              </div>
-              <div className="mt-1 flex items-center justify-center gap-2">
-                <button onClick={()=>undoLastTeam(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">↶ Undo</button>
-                <button onClick={()=>openColor(t.id)} className="px-2 py-1 rounded-lg border border-slate-700 bg-slate-800 hover:bg-slate-700 text-xs">🎨</button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -429,6 +537,7 @@ const Mobile = memo(function Mobile({
               autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck="false"
               placeholder={app.teams[activeIdx] ? ("Add " + app.teams[activeIdx].name + " score") : "Add score"}
               defaultValue=""
+              disabled={!!app.winnerTeamId}
               onInput={(e)=>{
                 const digits = (e.currentTarget.value || "").replace(/\D+/g,"");
                 if (digits !== e.currentTarget.value) {
@@ -445,20 +554,22 @@ const Mobile = memo(function Mobile({
               onKeyUp={(e)=>{
                 if (e.key === "Enter") requestAnimationFrame(()=> inputRef.current?.focus({ preventScroll: true }));
               }}
-              className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600 no-focus-outline"
+              className="flex-1 min-w-0 h-12 px-3 rounded-xl border border-slate-700 bg-slate-800 text-slate-100 outline-none focus:ring-2 focus:ring-emerald-600 no-focus-outline disabled:opacity-60"
             />
             <button
               type="button"
               tabIndex="-1"
               onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
               onClick={handleAdd}
-              className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700">Add ↦</button>
+              disabled={!!app.winnerTeamId}
+              className="px-3 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 disabled:opacity-50">Add ↦</button>
             <button
               type="button"
               tabIndex="-1"
               onPointerDown={(e)=> { e.preventDefault(); e.stopPropagation(); }}
               onClick={()=> { setActiveIdx(i => (i+1)%app.teams.length); requestAnimationFrame(()=> inputRef.current?.focus({ preventScroll: true })); }}
-              className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700" title="Switch team">↔</button>
+              disabled={!!app.winnerTeamId}
+              className="px-2 h-12 rounded-xl border border-slate-700 bg-slate-800 hover:bg-slate-700 disabled:opacity-50" title="Switch team">↔</button>
           </div>
           <div className="absolute right-2 -bottom-5 text-[10px] text-slate-400 opacity-70">{APP_VERSION}</div>
         </div>
@@ -471,6 +582,7 @@ const Mobile = memo(function Mobile({
 function App(){
   const [app,setApp] = usePersistedState({
     target:100,
+    winnerTeamId:null,
     teams:[
       { id:uid(), name:"Team A", color:"#38bdf8", teamEntries:[], members:[
         {id:uid(), name:"Member 1", entries:[]},
@@ -486,34 +598,67 @@ function App(){
     history:[],
   });
 
-  // history helpers
-  const snapshot = (p)=> JSON.parse(JSON.stringify({ teams: p.teams, target: p.target }));
+  // helpers
+  const teamTotal = (team)=> sum(team.members.flatMap(m=>m.entries)) + sum(team.teamEntries||[]);
+  const snapshot = (p)=> JSON.parse(JSON.stringify({ winnerTeamId: p.winnerTeamId, teams: p.teams, target: p.target }));
   const pushHistory = ()=> setApp(p => ({ ...p, history: [...p.history.slice(-49), snapshot(p)] }));
+  const checkWinner = (teams, prevWinner) => {
+    if (prevWinner) return prevWinner;
+    for (const t of teams) {
+      if (teamTotal(t) >= (app.target||100)) return t.id;
+    }
+    return null;
+  };
+
   const onUndo = ()=> setApp(p => {
     if (!p.history.length) return p;
     const last = p.history[p.history.length-1];
-    return { ...p, teams: last.teams, target: last.target, history: p.history.slice(0,-1) };
+    return { ...p, teams: last.teams, target: last.target, winnerTeamId: last.winnerTeamId ?? null, history: p.history.slice(0,-1) };
   });
   const onReset = ()=> {
     if (!confirm("Reset scores (no archive)?")) return;
     pushHistory();
-    setApp(p => ({ ...p, teams: p.teams.map(t => ({ ...t, teamEntries: [], members: t.members.map(m => ({ ...m, entries: [] })) })) }));
+    setApp(p => ({ ...p, winnerTeamId:null, teams: p.teams.map(t => ({ ...t, teamEntries: [], members: t.members.map(m => ({ ...m, entries: [] })) })) }));
   };
 
-  // team/member mutations
-  const addMember = (teamId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.length>=MAX_MEMBERS ? t.members : [...t.members,{id:uid(),name:`Member ${t.members.length+1}`,entries:[]}]} : t)})); };
-  const removeMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.filter(m=>m.id!==memberId)} : t) })); };
-  const renameTeam = (teamId, name)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, name} : t)})); };
-  const commitMemberName = (memberId, name)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> ({...t, members:t.members.map(m=> m.id===memberId ? {...m, name} : m)}))})); };
-  const addScore = (teamId, memberId, n)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:[...m.entries, n]} : m)} : t)})); };
+  // team/member mutations with winner check
+  const addMember = (teamId)=> { if (app.winnerTeamId) return; pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.length>=MAX_MEMBERS ? t.members : [...t.members,{id:uid(),name:`Member ${t.members.length+1}`,entries:[]}]} : t)})); };
+  const removeMember = (teamId, memberId)=> { if (app.winnerTeamId) return; pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members: t.members.filter(m=>m.id!==memberId)} : t) })); };
+  const renameTeam = (teamId, name)=> setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, name} : t)}));
+  const commitMemberName = (memberId, name)=> { if (app.winnerTeamId) return; pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> ({...t, members:t.members.map(m=> m.id===memberId ? {...m, name} : m)}))})); };
+  const addScore = (teamId, memberId, n)=> {
+    if (app.winnerTeamId) return;
+    pushHistory();
+    setApp(p=>{
+      const teams = p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:[...m.entries, n]} : m)} : t);
+      const winner = checkWinner(teams, p.winnerTeamId);
+      return {...p, teams, winnerTeamId: winner };
+    });
+  };
   const undoMember = (teamId, memberId)=> { pushHistory(); setApp(p=>({...p, teams:p.teams.map(t=> t.id===teamId ? {...t, members:t.members.map(m=> m.id===memberId ? {...m, entries:m.entries.slice(0,-1)} : m)} : t)})); };
-
-  const addTeamScore = (teamId, n)=> { pushHistory(); setApp(p=> ({ ...p, teams: p.teams.map(t => t.id===teamId ? { ...t, teamEntries:[...(t.teamEntries||[]), n] } : t) })); };
+  const addTeamScore = (teamId, n)=> {
+    if (app.winnerTeamId) return;
+    pushHistory();
+    setApp(p=>{
+      const teams = p.teams.map(t => t.id===teamId ? { ...t, teamEntries:[...(t.teamEntries||[]), n] } : t);
+      const winner = checkWinner(teams, p.winnerTeamId);
+      return { ...p, teams, winnerTeamId: winner };
+    });
+  };
   const undoLastTeam = (teamId)=> { pushHistory(); setApp(p=> ({ ...p, teams: p.teams.map(t => t.id===teamId ? { ...t, teamEntries:(t.teamEntries||[]).slice(0,-1) } : t) })); };
 
   // color picker
   const [pickerTeamId, setPickerTeamId] = useState(null);
   const pickerTeam = pickerTeamId ? app.teams.find(t => t.id === pickerTeamId) : null;
+
+  // Winner overlay state
+  const [showWinnerOverlay, setShowWinnerOverlay] = useState(false);
+  const winnerTeam = app.winnerTeamId ? app.teams.find(t => t.id === app.winnerTeamId) : null;
+
+  // open overlay when winner set
+  useEffect(()=>{
+    if (app.winnerTeamId) setShowWinnerOverlay(true);
+  }, [app.winnerTeamId]);
 
   return (
     <div className="min-h-screen w-full text-slate-100">
@@ -548,6 +693,14 @@ function App(){
           initial={pickerTeam.color}
           onInput={(hex)=> setApp(p=> ({ ...p, teams: p.teams.map(t=> t.id===pickerTeam.id ? { ...t, color: hex } : t) }))}
           onClose={()=> setPickerTeamId(null)}
+        />
+      )}
+
+      {showWinnerOverlay && winnerTeam && (
+        <WinnerOverlay
+          team={winnerTeam}
+          onClose={()=> setShowWinnerOverlay(false)}
+          onReset={onReset}
         />
       )}
     </div>
